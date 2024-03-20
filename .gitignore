@@ -1,3 +1,5 @@
 input_data/
 auxilliary_data/
 global_maps/
+.netrc
+.copernicusmarine/.copernicusmarine-credentials
