@@ -320,24 +320,92 @@ def grid_ssh(tracks,n,N_t,L_x,L_y,start_date,filtered=False):
     days_since_start = [dt - np.datetime64(start_date) for dt in tracks['time']]
     days_since_start = (np.array(days_since_start).astype('timedelta64[D]') / np.timedelta64(1, 'D')).astype('int').tolist()
     unique_values = np.unique(days_since_start)
+    missing_days = [t for t in range(N_t) if t not in unique_values]
+    # print(unique_values)
     first_indices = [np.where(days_since_start == value)[0][0] for value in unique_values]
+    # print(len(first_indices))
     data_final = np.zeros((N_t,n,n))
+    missed_days = 0
     for day in range(N_t):
-        if day == N_t-1:
-            ssh_loop = ssh[first_indices[day]:]
-            x_loop = x[first_indices[day]:]
-            y_loop = y[first_indices[day]:]
-        else:
-            ssh_loop = ssh[first_indices[day]:first_indices[day+1]]
-            x_loop = x[first_indices[day]:first_indices[day+1]]
-            y_loop = y[first_indices[day]:first_indices[day+1]]
+        if day not in missing_days:
+            if day == N_t-1:
+                ssh_loop = ssh[first_indices[day-missed_days]:]
+                x_loop = x[first_indices[day-missed_days]:]
+                y_loop = y[first_indices[day-missed_days]:]
+            else:
+                ssh_loop = ssh[first_indices[day-missed_days]:first_indices[day-missed_days+1]]
+                x_loop = x[first_indices[day-missed_days]:first_indices[day-missed_days+1]]
+                y_loop = y[first_indices[day-missed_days]:first_indices[day-missed_days+1]]
 
-        x_loop = x_loop[~np.isnan(ssh_loop)]
-        y_loop = y_loop[~np.isnan(ssh_loop)]
-        ssh_loop = ssh_loop[~np.isnan(ssh_loop)]
+            x_loop = x_loop[~np.isnan(ssh_loop)]
+            y_loop = y_loop[~np.isnan(ssh_loop)]
+            ssh_loop = ssh_loop[~np.isnan(ssh_loop)]
+        else:
+            missed_days+=1
+            x_loop = np.zeros(1)
+            y_loop = np.zeros(1)
+            ssh_loop = np.zeros(1)
         input_grid, _,_,_ = stats.binned_statistic_2d(x_loop, y_loop, ssh_loop, statistic = 'mean', bins=n, range = [[-L_x/2, L_x/2],[-L_y/2, L_y/2]])
         input_grid = np.rot90(input_grid)
         input_grid[np.isnan(input_grid)] = 0
         data_final[day,:,:] = input_grid
 
+    return data_final
+
+def normalise_ssh(ssh, mean_ssh, std_ssh):    
+    return (ssh-mean_ssh)/std_ssh
+
+def rescale_x(x, L_x, n):
+    return (x + 0.5*L_x)*(n - 1)/L_x
+
+def rescale_y(y, L_y, n): 
+    return (-y + 0.5*L_y)*(n - 1)/L_y
+
+def reformat_output_tracks(tracks, max_outvar_length, N_t, n, L_x, L_y, start_date, mean_ssh, std_ssh, filtered=False):
+    x = tracks['x']
+    y = tracks['y']
+    t = tracks['time']
+    ssh = tracks['sla_filtered'] if filtered else tracks['sla_unfiltered']
+    days_since_start = [dt - np.datetime64(start_date) for dt in tracks['time']]
+    days_since_start = (np.array(days_since_start).astype('timedelta64[D]') / np.timedelta64(1, 'D')).astype('int').tolist()
+    unique_values = np.unique(days_since_start)
+    missing_days = [t for t in range(N_t) if t not in unique_values]
+    # print(unique_values)
+    first_indices = [np.where(days_since_start == value)[0][0] for value in unique_values]
+    # print(len(first_indices))
+    data_final = np.zeros((N_t,max_outvar_length,3))
+    missed_days = 0
+    for day in range(N_t):
+        if day not in missing_days:
+            if day == N_t-1:
+                ssh_loop = ssh[first_indices[day-missed_days]:]
+                x_loop = x[first_indices[day-missed_days]:]
+                y_loop = y[first_indices[day-missed_days]:]
+            else:
+                ssh_loop = ssh[first_indices[day-missed_days]:first_indices[day-missed_days+1]]
+                x_loop = x[first_indices[day-missed_days]:first_indices[day-missed_days+1]]
+                y_loop = y[first_indices[day-missed_days]:first_indices[day-missed_days+1]]
+
+            x_loop = x_loop[~np.isnan(ssh_loop)]
+            y_loop = y_loop[~np.isnan(ssh_loop)]
+            ssh_loop = ssh_loop[~np.isnan(ssh_loop)]
+            
+            x_loop = rescale_x(x_loop, L_x, n)
+            y_loop = rescale_y(y_loop, L_y, n)
+            ssh_loop = normalise_ssh(ssh_loop, mean_ssh, std_ssh)
+            
+            n_obs = ssh_loop.shape[0]
+            if n_obs<max_outvar_length:
+                data_final[day-missed_days,:n_obs,0] = x_loop
+                data_final[day-missed_days,:n_obs,1] = y_loop
+                data_final[day-missed_days,:n_obs,2] = ssh_loop
+            else:
+                data_final[day-missed_days,:,0] = x_loop[:max_outvar_length]
+                data_final[day-missed_days,:,1] = y_loop[:max_outvar_length]
+                data_final[day-missed_days,:,2] = ssh_loop[:max_outvar_length]
+            
+                
+        else:
+            missed_days+=1
+            
     return data_final
