@@ -33,3 +33,30 @@ def add_ghost_points(ds,lon_name='longitude',lon_bounds=[0,360]):
     ds[lon_name] = lon
     return ds
 
+def add_ice_mask(ds_neurost,ds_sst):
+    
+    """
+    Take sea ice mask from MUR SST and apply it to NeurOST SSH
+
+    Args:
+        ds_neurost: standard NeurOST xarray dataset
+        ds_sst: standard MUR xarray dataset
+
+    Returns:
+        masked_ds: xarray dataset with NeurOST SSH with NaN mask applied to sea ice
+    """
+    
+    
+    ds_sst = ds_sst[['sea_ice_fraction']]
+    ds_sst = ds_sst.isel(lon=slice(None,None,10), lat=slice(None,None,10))
+    # ds_sst = ds_sst.coarsen({'lon':10,'lat':10},boundary='trim').mean()
+    ds_sst['lon'] = ds_sst['lon']%360
+    ds_sst = ds_sst.sortby('lon')
+    ice_mask = xr.where(ds_sst.sea_ice_fraction > 0.01, 1, 0)
+    ds_sst['ice_mask'] = ice_mask
+    ds_sst = ds_sst.rename({'lon':'longitude','lat':'latitude'})
+    ds_sst = ds_sst.isel(time=0).interp_like(ds_neurost.isel(time=0),method = 'nearest')
+    subset = ds_sst['ice_mask'].isel(longitude=-1)
+    subset[:] = ds_sst['ice_mask'].isel(longitude=-2).copy()
+    masked_ds = ds_neurost.where(ds_sst['ice_mask'] != 1, np.nan)
+    return masked_ds
