@@ -75,13 +75,20 @@ class NeurOST_dataset(Dataset):
         sst = grid_sst_hr(self.worker_ds_sst,self.N_t,self.n, self.L_x, self.L_y, lon0, lat0, self.coord_grids[idx,])
 
         sst[sst!=0] = (sst[sst!=0]-self.mean_sst)/self.std_sst
-
-        tracks_in, tracks_out = extract_tracked(self.worker_ds_ssh, self.start_date, self.start_date+timedelta(days=self.N_t+2), self.L_x, self.L_y, lon0, lat0, transformer_ll2xyz, withhold_sats = ['s3a','s3b'])
+        
+        if self.withheld_sats is not None:
+            tracks_in, tracks_out = extract_tracked(self.worker_ds_ssh, self.start_date, self.start_date+timedelta(days=self.N_t+2), self.L_x, self.L_y, lon0, lat0, transformer_ll2xyz, withhold_sats = self.withheld_sats)
+        else:
+            tracks_in = extract_tracked(self.worker_ds_ssh, self.start_date, self.start_date+timedelta(days=self.N_t+2), self.L_x, self.L_y, lon0, lat0, transformer_ll2xyz, withhold_sats = self.withheld_sats)
         ssh_in = grid_ssh(tracks_in, self.n, self.N_t, self.L_x, self.L_y, self.start_date,self.filtered_sla)
-        ssh_out = reformat_output_tracks(tracks_out, self.max_outvar_length, self.N_t, self.n, self.L_x, self.L_y, self.start_date, self.mean_ssh, self.std_ssh, self.filtered_sla)
+        
 
         ssh_in[ssh_in!=0] = (ssh_in[ssh_in!=0]-self.mean_ssh)/self.std_ssh
         invar = torch.from_numpy(np.stack((sst, ssh_in), axis = 1).astype(np.float32))
-        outvar = torch.from_numpy(ssh_out)
+        if self.withheld_sats is not None:
+            ssh_out = reformat_output_tracks(tracks_out, self.max_outvar_length, self.N_t, self.n, self.L_x, self.L_y, self.start_date, self.mean_ssh, self.std_ssh, self.filtered_sla)
+            outvar = torch.from_numpy(ssh_out)
+        else:
+            outvar = torch.from_numpy(np.zeros(1).astype(np.float32))
         
         return invar, outvar
