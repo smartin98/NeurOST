@@ -326,10 +326,10 @@ def rescale_y(y, L_y, n):
             
 #     return data_final
 
-def reformat_output_tracks(tracks, max_outvar_length, N_t, n, L_x, L_y, start_date, mean_ssh, std_ssh, filtered=False):
+def reformat_output_tracks(tracks, max_outvar_length, N_t, n, L_x, L_y, start_date, mean_ssh, std_ssh):
     x = tracks['x']
     y = tracks['y']
-    ssh = tracks['sla_filtered'] if filtered else tracks['sla_unfiltered']
+    ssh = tracks['sla']
 
     days_since_start = (tracks['time'] - np.datetime64(start_date)) / np.timedelta64(1, 'D')
     days_since_start = days_since_start.astype(int)
