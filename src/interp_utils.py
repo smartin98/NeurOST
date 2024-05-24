@@ -333,8 +333,6 @@ def reformat_output_tracks(tracks, max_outvar_length, N_t, n, L_x, L_y, start_da
 
     data_final = np.zeros((N_t, max_outvar_length, 3))
     
-    processed_days = 0
-    
     for day in range(N_t):
         mask = days_since_start == day
         x_loop = x[mask]
@@ -352,11 +350,8 @@ def reformat_output_tracks(tracks, max_outvar_length, N_t, n, L_x, L_y, start_da
             ssh_loop = normalise_ssh(ssh_loop, mean_ssh, std_ssh)
 
             n_obs = min(x_loop.shape[0], max_outvar_length)
-            data_final[processed_days, :n_obs, 0] = x_loop[:n_obs]
-            data_final[processed_days, :n_obs, 1] = y_loop[:n_obs]
-            data_final[processed_days, :n_obs, 2] = ssh_loop[:n_obs]
-
-        if x_loop.size > 0:
-            processed_days += 1
+            data_final[day, :n_obs, 0] = x_loop[:n_obs]
+            data_final[day, :n_obs, 1] = y_loop[:n_obs]
+            data_final[day, :n_obs, 2] = ssh_loop[:n_obs]
 
     return data_final
