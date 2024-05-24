@@ -182,7 +182,7 @@ def load_multisat_ssh(ssh_files):
     
     return ds
 
-def extract_tracked(ds, date_min, date_max, L_x, L_y, lon0, lat0, transformer_ll2xyz, coord_grid, withhold_sats=None):
+def extract_tracked(ds, date_min, date_max, L_x, L_y, lon0, lat0, transformer_ll2xyz, coord_grid, filtered = False, withhold_sats=None):
     ds = ds.sel(time=slice(date_min, date_max))
     # shift to Greenwich to avoid dateline issues
     ds['longitude'] = (ds['longitude'] % 360 - lon0 + 180) % 360 - 180
@@ -204,32 +204,35 @@ def extract_tracked(ds, date_min, date_max, L_x, L_y, lon0, lat0, transformer_ll
     
     longitude = np.array(ds['longitude']).ravel() 
     latitude = np.array(ds['latitude']).ravel()
-    sla_f = np.array(ds['sla_filtered']).ravel()
-    sla_uf = np.array(ds['sla_unfiltered']).ravel()
+    if filtered:
+        sla = np.array(ds['sla_filtered']).ravel()
+    else:
+        sla = np.array(ds['sla_unfiltered']).ravel()
+    
     sat = np.array(ds['sat']).ravel()
     t = np.array(ds['time']).ravel()
 
     x, y, z = ll2xyz(latitude, longitude, 0, lat0, 0, 0, transformer_ll2xyz)
     mask = (z > -1000e3) & (x < L_x / 2) & (x > -L_x / 2) & (y < L_y / 2) & (y > -L_y / 2)
-    x, y, sla_f, sla_uf, sat, t = x[mask], y[mask], sla_f[mask], sla_uf[mask], sat[mask], t[mask]
+    x, y, sla, sat, t = x[mask], y[mask], sla[mask], sat[mask], t[mask]
 
     if withhold_sats is not None:
         mask = np.isin(sat, withhold_sats, invert=True)  
-        x_in, y_in, t_in, sla_f_in, sla_uf_in = x[mask], y[mask], t[mask], sla_f[mask], sla_uf[mask]
-        x_out, y_out, t_out, sla_f_out, sla_uf_out = x[~mask], y[~mask], t[~mask], sla_f[~mask], sla_uf[~mask]
-        tracks_in = {'x': x_in, 'y': y_in, 'time': t_in, 'sla_filtered': sla_f_in, 'sla_unfiltered': sla_uf_in}
-        tracks_out = {'x': x_out, 'y': y_out, 'time': t_out, 'sla_filtered': sla_f_out, 'sla_unfiltered': sla_uf_out}
+        x_in, y_in, t_in, sla_in = x[mask], y[mask], t[mask], sla[mask]
+        x_out, y_out, t_out, sla_out = x[~mask], y[~mask], t[~mask], sla[~mask]
+        tracks_in = {'x': x_in, 'y': y_in, 'time': t_in, 'sla': sla_in}
+        tracks_out = {'x': x_out, 'y': y_out, 'time': t_out, 'sla': sla_out}
         return tracks_in, tracks_out
 
     else:
-        tracks = {'x': x, 'y': y, 'time': t, 'sla_filtered': sla_f, 'sla_unfiltered': sla_uf}
+        tracks = {'x': x, 'y': y, 'time': t, 'sla': sla}
         return tracks
 
 
-def grid_ssh(tracks, n, N_t, L_x, L_y, start_date, filtered=False):
+def grid_ssh(tracks, n, N_t, L_x, L_y, start_date):
     x = tracks['x']
     y = tracks['y']
-    ssh = tracks['sla_filtered'] if filtered else tracks['sla_unfiltered']
+    ssh = tracks['sla']
 
     days_since_start = (tracks['time'] - np.datetime64(start_date)) / np.timedelta64(1, 'D')
     days_since_start = days_since_start.astype(int)
