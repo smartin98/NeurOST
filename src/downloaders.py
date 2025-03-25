@@ -10,6 +10,8 @@ import xarray as xr
 # # MUR SST
 # #############################################
 
+remove_mur_nc = True
+
 
 def format_date_to_string(date_object):
     """Formats a datetime.date object to YYYY-MM-DD'T'HH:MM:00Z string.
