@@ -4,10 +4,11 @@ import sys
 from glob import glob
 import copernicusmarine as cm
 import xarray as xr
+# cm.login()
 
-#############################################
-# MUR SST
-#############################################
+# #############################################
+# # MUR SST
+# #############################################
 
 
 def format_date_to_string(date_object):
@@ -34,31 +35,37 @@ date_end = datetime.strptime(date_end_input, "%Y-%m-%d").date()
 start_date_string = format_date_to_string(date_start)
 end_date_string = format_date_to_string(date_end)
 
-command = 'podaac-data-downloader -c MUR-JPL-L4-GLOB-v4.1 -d ./input_data/mur_sst --start-date '+start_date_string+' --end-date '+end_date_string+' -b="-180,-90,180,90"'
+n_days = (date_end-date_start).days
+for t in range(n_days):
 
-# os.system(command)
-
-## coarsen MUR 2x to speed up pre-processing functions
-sst_files = os.listdir('input_data/mur_sst/')
-print('coarsening MUR SST')
-for f in sst_files:
-    print('coarsening '+f)
-    ds = xr.open_dataset('input_data/mur_sst/'+f)
-    ds = ds[['analysed_sst']]
-    # print('chunking')
-    # ds = ds.chunk('auto')#{'lon':120,'lat':120})
-    # print(ds['analysed_sst'])
-    # print('chunked')
-
-    ds = ds.coarsen({'lon':5,'lat':5},boundary = 'trim').mean()
-    ds.to_netcdf('input_data/mur_sst_coarse/'+f)
+    command = 'podaac-data-downloader -c MUR-JPL-L4-GLOB-v4.1 -d ./input_data/mur_sst_tmp --start-date '+format_date_to_string(date_start+timedelta(days=t))+' --end-date '+format_date_to_string(date_start+timedelta(days=t+1))+' -b="-180,-90,180,90"'
+    
+    os.system(command)
+    
+    # ### coarsen MUR 5x and save to zarr to speed up pre-processing functions
+    sst_dir = 'input_data/mur_sst_tmp/'
+    files = sorted(glob(sst_dir+'*.nc'))
+    
+    for f in files:
+        print('coarsening: '+ f)
+        ds_sst = xr.open_dataset(f)
+        if os.path.isdir('input_data/mur_coarse_zarrs/' + str(ds_sst['time'].values[0])[:10].replace('-','') +'.zarr'):
+            print('already coarsened, skipping')
+            if remove_mur_nc:
+                os.remove(f)
+        else:
+            sst = ds_sst['analysed_sst'].load().astype('float32').coarsen({'lon':5,'lat':5},boundary = 'trim').mean()
+            sst = sst.chunk({'time':1,'lon':1000,'lat':1000})
+            sst.to_zarr('input_data/mur_coarse_zarrs/' + str(sst['time'].values[0])[:10].replace('-','') +'.zarr')
+            if remove_mur_nc:
+                os.remove(f)
 
 #############################################
 # CMEMS SLA
 #############################################
 
 
-sats = ['al','c2n','h2b','j3n','s3a','s3b','s6a-hr','swon']
+# sats = ['al','c2n','h2b','j3n','s3a','s3b','s6a-hr','swon']
 
 
 # def generate_date_list(start_date, end_date):
