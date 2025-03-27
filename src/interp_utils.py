@@ -196,52 +196,57 @@ def empty_directory(directory):
                 os.remove(item_path)
                 
 
-def create_sla_chunks(start_date, end_date, chunk_dir = 'input_data/sla_cache', time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10, n_t = 30, cmems_dir = 'input_data/cmems_sla'):
-    dates, ssh_datasets = load_ssh_by_date_range(start_date - timedelta(days = n_t//2), end_date + timedelta(days = n_t//2), dir_name = cmems_dir)
-    ds = xr.concat(ssh_datasets, dim = 'time')
-    
-    del ssh_datasets
-    
-    ds['day_idx'] = (ds['time'] - np.datetime64(start_date - timedelta(days = n_t//2), 'ns'))// np.timedelta64(1, 'D')
-    time_vals = ds['day_idx'].values
-    time_bins = np.arange(0,365,time_bin_size)
-    lat_bins = np.arange(-90, 90, lat_bin_size)
-    lon_bins = np.arange(-180, 180, lon_bin_size)
-
-    # Compute bin indices
-    time_idx = np.digitize(time_vals, time_bins) - 1
-    lat_vals = ds['latitude'].values.ravel()
-    lon_vals = ds['longitude'].values.ravel()
-    lat_idx = np.digitize(lat_vals, lat_bins) - 1
-    lon_idx = np.digitize(lon_vals, lon_bins) - 1
-    
-    df = pd.DataFrame({
-        'time_bin': time_idx,
-        'lat_bin': lat_idx,
-        'lon_bin': lon_idx
-    })
-
-    # group data indices by bin
-    grouped = df.groupby(['time_bin', 'lat_bin', 'lon_bin']).indices
+def create_sla_chunks(start_date, end_date, chunk_dir = 'input_data/sla_cache', time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10, n_t = 30, cmems_dir = 'input_data/cmems_sla',force_recache=False):
     
     output_dir = chunk_dir + '_' + str(start_date) + '_' + str(end_date)
-    os.makedirs(output_dir, exist_ok=True)
-    #empty any existing files left over from previous cache under same name
-    empty_directory(output_dir)
+    if ((os.path.exists(output_dir) and os.path.isdir(output_dir)) and force_recache) or (not os.path.exists(output_dir)):
     
-    for (t_bin, lat_bin, lon_bin), idx in tqdm(grouped.items(), desc="Saving chunked SSH into cache at "+output_dir):
-        # Extract data efficiently using precomputed indices
-        lat_subset = lat_vals[idx]
-        lon_subset = lon_vals[idx]
-        time_subset = time_vals[idx]
-        sla_unfiltered_subset = ds['sla_unfiltered'].values[idx]
-        sla_filtered_subset = ds['sla_filtered'].values[idx]
-        sat_subset = ds['satellite'].values[idx]
+        dates, ssh_datasets = load_ssh_by_date_range(start_date - timedelta(days = n_t//2), end_date + timedelta(days = n_t//2), dir_name = cmems_dir)
+        ds = xr.concat(ssh_datasets, dim = 'time')
 
-        # Save data
-        filename = os.path.join(output_dir, f'bin_t{t_bin}_lat{lat_bin}_lon{lon_bin}.npy')
-        np.save(filename, np.column_stack((lat_subset, lon_subset, time_subset, sla_unfiltered_subset, sla_filtered_subset)))
-        np.save(filename[:-4] + '_sats.npy', sat_subset)
+        del ssh_datasets
+
+        ds['day_idx'] = (ds['time'] - np.datetime64(start_date - timedelta(days = n_t//2), 'ns'))// np.timedelta64(1, 'D')
+        time_vals = ds['day_idx'].values
+        time_bins = np.arange(0,365,time_bin_size)
+        lat_bins = np.arange(-90, 90, lat_bin_size)
+        lon_bins = np.arange(-180, 180, lon_bin_size)
+
+        # Compute bin indices
+        time_idx = np.digitize(time_vals, time_bins) - 1
+        lat_vals = ds['latitude'].values.ravel()
+        lon_vals = ds['longitude'].values.ravel()
+        lat_idx = np.digitize(lat_vals, lat_bins) - 1
+        lon_idx = np.digitize(lon_vals, lon_bins) - 1
+
+        df = pd.DataFrame({
+            'time_bin': time_idx,
+            'lat_bin': lat_idx,
+            'lon_bin': lon_idx
+        })
+
+        # group data indices by bin
+        grouped = df.groupby(['time_bin', 'lat_bin', 'lon_bin']).indices
+    
+        os.makedirs(output_dir, exist_ok=True)
+        #empty any existing files left over from previous cache under same name
+        empty_directory(output_dir)
+
+        for (t_bin, lat_bin, lon_bin), idx in tqdm(grouped.items(), desc="Saving chunked SSH into cache at "+output_dir):
+            # Extract data efficiently using precomputed indices
+            lat_subset = lat_vals[idx]
+            lon_subset = lon_vals[idx]
+            time_subset = time_vals[idx]
+            sla_unfiltered_subset = ds['sla_unfiltered'].values[idx]
+            sla_filtered_subset = ds['sla_filtered'].values[idx]
+            sat_subset = ds['satellite'].values[idx]
+
+            # Save data
+            filename = os.path.join(output_dir, f'bin_t{t_bin}_lat{lat_bin}_lon{lon_bin}.npy')
+            np.save(filename, np.column_stack((lat_subset, lon_subset, time_subset, sla_unfiltered_subset, sla_filtered_subset)))
+            np.save(filename[:-4] + '_sats.npy', sat_subset)
+    else:
+        print('skipping cache saving since already exists and force_recache=False')
         
 def get_query_bins(query_time_start, query_time_end, query_lat_min, query_lat_max, query_lon_min, query_lon_max, time_bins, lat_bins, lon_bins):
     # Compute full bin edges (intervals)
@@ -401,7 +406,7 @@ def bin_ssh(data, L_x = 960e3, L_y = 960e3, n = 128, n_t = 30, filtered = False)
     return ssh_grid
 
 
-def get_ssh(r,t,coord_grid,transformer_ll2xyz,n_t = 30, n = 128, L_x = 960e3, L_y = 960e3, time_bins=time_bins, lon_bins=lon_bins, lat_bins=lat_bins, leave_out_altimeters=True, withhold_sat='random', filtered=False, chunk_dir='input_data/sla_cache'):
+def get_ssh(r,t,coord_grid,transformer_ll2xyz, time_bins, lon_bins, lat_bins, n_t = 30, n = 128, L_x = 960e3, L_y = 960e3, leave_out_altimeters=True, withhold_sat='random', filtered=False, chunk_dir='input_data/sla_cache'):
 
     mid = n//2
     neighbors = [(r, mid-1, mid-1), (r, mid-1, mid), (r, mid, mid-1), (r, mid, mid)]
@@ -442,9 +447,9 @@ def get_ssh(r,t,coord_grid,transformer_ll2xyz,n_t = 30, n = 128, L_x = 960e3, L_
             out_tracks.append(d_out[mask,:])
             
         len_max = max([d.shape[0] for d in out_tracks])
-        out_data = np.zeros((n_t,len_max,d_out.shape[-1]))
+        out_data = np.zeros((n_t,len_max,3))
         for t in range(n_t):
-            out_data[t,:out_tracks[t].shape[0],] = out_tracks[t]
+            out_data[t,:out_tracks[t].shape[0],] = out_tracks[t][:,:3]
         
     else:
         out_data = None
