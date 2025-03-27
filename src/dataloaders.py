@@ -6,10 +6,11 @@ from datetime import date, timedelta
 import os
 import numpy as np
 import pyproj
+import h5py
 
 
 class NeurOST_dataset(Dataset):
-    def __init__(self, sst_zarr, start_date, end_date, N_t, mean_ssh, std_ssh, mean_sst, std_sst, coord_grids, n = 128, L_x = 960e3, L_y = 960e3, force_recache = False, leave_out_altimeters=True, withhold_sat='random', filtered=False, use_sst=True, time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10):
+    def __init__(self, sst_zarr, start_date, end_date, N_t, mean_ssh, std_ssh, mean_sst, std_sst, coord_grids, n = 128, L_x = 960e3, L_y = 960e3, force_recache = False, leave_out_altimeters=True, withhold_sat='random', filtered=False, use_sst=True, time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10, ssh_out_n_max = 1000, multiprocessing=False):
         self.sst_zarr = sst_zarr
         self.start_date = start_date
         self.end_date = end_date
@@ -32,6 +33,8 @@ class NeurOST_dataset(Dataset):
         self.time_bin_size = time_bin_size
         self.lon_bin_size = lon_bin_size
         self.lat_bin_size = lat_bin_size
+        self.ssh_out_n_max = ssh_out_n_max
+        self.multiprocessing=False
         
                 
         self.ds_sst = xr.open_mfdataset(self.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
@@ -45,7 +48,11 @@ class NeurOST_dataset(Dataset):
         r_idxs = np.arange(self.coord_grids.shape[0])
         
         create_sla_chunks(self.start_date, self.end_date, chunk_dir = 'input_data/sla_cache', time_bin_size = self.time_bin_size, lon_bin_size = self.lon_bin_size, lat_bin_size = self.lat_bin_size, n_t = self.N_t, cmems_dir = 'input_data/cmems_sla', force_recache = self.force_recache)
-        self.chunk_dir = 'input_data/sla_cache' + '_' + str(self.start_date) + '_' + str(self.end_date)
+        self.sla_hdf5_path = 'input_data/sla_cache' + '_' + str(self.start_date) + '_' + str(self.end_date) + '.h5'
+        if not multiprocessing:
+            self.hdf5 = h5py.File(self.sla_hdf5_path, 'r')
+        else:
+            self.hdf5 = None
         
         self.time_bins = np.arange(0,self.ds_sst['time'].shape[0], self.time_bin_size)
         self.lon_bins = np.arange(-180,180, self.lon_bin_size)
@@ -60,9 +67,13 @@ class NeurOST_dataset(Dataset):
         {"proj":'geocent', "ellps":'WGS84', "datum":'WGS84'},
         )
         
+        if not multiprocessing:
+            self.ds_sst = None
+        
         
     def __len__(self):
         return np.size(self.t_idxs)
+    
     
     def __getitem__(self, idx):
         
@@ -77,8 +88,9 @@ class NeurOST_dataset(Dataset):
             sst = grid_sst_hr(self.ds_sst.isel(time=slice(t-self.N_t//2, t+self.N_t//2)),self.N_t,self.n, self.L_x, self.L_y, lon0, lat0, self.coord_grids[r,])
 
             sst[sst!=0] = (sst[sst!=0]-self.mean_sst)/self.std_sst
+            
         
-        ssh_in, ssh_out = get_ssh(r, 
+        ssh_in, ssh_out = get_ssh_h5(r, 
                                   t, 
                                   self.coord_grids, 
                                   self.transformer_ll2xyz, 
@@ -92,7 +104,7 @@ class NeurOST_dataset(Dataset):
                                   leave_out_altimeters=self.leave_out_altimeters, 
                                   withhold_sat=self.withhold_sat, 
                                   filtered=self.filtered, 
-                                  chunk_dir=self.chunk_dir
+                                  h5f=self.hdf5
                                  )
         
         ssh_in[ssh_in!=0] = (ssh_in[ssh_in!=0]-self.mean_ssh)/self.std_ssh
@@ -105,14 +117,46 @@ class NeurOST_dataset(Dataset):
             y[y!=0] = (0.5 * self.L_y - y[y!=0]) * (self.n-1) / self.L_y # convert to pixel coords for loss function
             ssh[ssh!=0] = (ssh[ssh!=0]-self.mean_ssh)/self.std_ssh
             ssh_out = np.stack((x,y,ssh), axis = -1)
+            if ssh_out.shape[1] < self.ssh_out_n_max:
+                ssh_out_final = np.zeros((self.N_t,self.ssh_out_n_max,3))
+                ssh_out_final[:,:ssh_out.shape[1]] = ssh_out
+            else:
+                ssh_out_final = ssh_out[:,:self.ssh_out_n_max,:]
+                
+                
         
         if self.use_sst:
             if ssh_out is not None:
-                return torch.from_numpy(np.stack((sst, ssh_in), axis = 1).astype(np.float32)), torch.from_numpy(ssh_out.astype(np.float32))
+                return torch.from_numpy(np.stack((sst, ssh_in), axis = 1).astype(np.float32)), torch.from_numpy(ssh_out_final.astype(np.float32))
             else:
-                return torch.from_numpy(np.stack((sst, ssh_in), axis = 1).astype(np.float32))
+                return torch.from_numpy(np.stack((sst, ssh_in), axis = 1).astype(np.float32)), torch.from_numpy(np.zeros((self.N_t,self.ssh_out_n_max,3),dtype=np.float32))
         else:
             if ssh_out is not None:
-                return torch.from_numpy(np.expand_dims(ssh_in, axis = 1).astype(np.float32)), torch.from_numpy(ssh_out.astype(np.float32))
+                return torch.from_numpy(np.expand_dims(ssh_in, axis = 1).astype(np.float32)), torch.from_numpy(ssh_out_final.astype(np.float32))
             else:
-                return torch.from_numpy(np.expand_dims(ssh_in, axis = 1).astype(np.float32))
+                return torch.from_numpy(np.expand_dims(ssh_in, axis = 1).astype(np.float32)), torch.from_numpy(np.zeros((self.N_t,self.ssh_out_n_max,3),dtype=np.float32))
+        
+    
+
+            
+            
+# Worker initialization function
+def worker_init_fn(worker_id, dataset):
+    worker_seed = 42  # Set to your desired starting seed
+    seed = worker_seed + worker_id
+    np.random.seed(seed)
+    torch.manual_seed(seed) 
+     # Set the worker-specific file and dataset access
+    sla_hdf5 = h5py.File(dataset.sla_hdf5_path, 'r')
+    
+    ds_sst = xr.open_mfdataset(dataset.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
+    if np.min(ds_sst['time']) > np.datetime64(str(dataset.start_date - timedelta(days = dataset.N_t//2)),'ns'):
+        raise ValueError("MUR SST zarr file missing dates at beginning of desired time range")
+    if np.max(ds_sst['time']) < np.datetime64(str(dataset.end_date + timedelta(days = dataset.N_t//2)),'ns'):
+        raise ValueError("MUR SST zarr file missing dates at end of desired time range")
+
+    ds_sst = ds_sst.sel(time=slice(str(dataset.start_date - timedelta(days = dataset.N_t//2)), str(dataset.end_date + timedelta(days = dataset.N_t//2))))
+    
+    # Make the data available for the worker to access
+    torch.utils.data.get_worker_info().dataset.hdf5 = sla_hdf5
+    torch.utils.data.get_worker_info().dataset.ds_sst = ds_sst
