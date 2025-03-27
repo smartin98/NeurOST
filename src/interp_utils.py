@@ -6,15 +6,11 @@ import scipy.stats as stats
 from scipy import interpolate
 from scipy.spatial import Delaunay
 from scipy.interpolate import LinearNDInterpolator
-#import matplotlib.path as mpltPath
 import xarray as xr 
-#import time
 from datetime import date, timedelta
 import os
-#import matplotlib.pyplot as plt
-#from joblib import Parallel, delayed
-#from random import shuffle
-#import copy
+from tqdm import tqdm
+import pandas as pd
 
 # function to list all files within a directory including within any subdirectories
 def GetListOfFiles(dirName, ext = '.nc'):
@@ -160,48 +156,299 @@ def grid_sst_hr(data_sst_hr, n_t, n, L_x, L_y, lon0, lat0, coord_grid):
     
     return sst_grids
 
-def load_multisat_ssh(ssh_files):
-    ds = xr.open_dataset(ssh_files[0])
-    ds['time_variable'] = ds['time']
-    ds['time'] = np.arange(ds['time'].shape[0])
-    ds = ds.rename({'time':'n_obs'})
-    ds = ds.rename({'time_variable':'time'})
-    for f in ssh_files[1:]:
-        ds2 = xr.open_dataset(f)
-        ds2['time_variable'] = ds2['time']
-        ds2['time'] = np.arange(ds['n_obs'].shape[0],ds['n_obs'].shape[0]+ds2['time'].shape[0])
-        ds2 = ds2.rename({'time':'n_obs'})
-        ds2 = ds2.rename({'time_variable':'time'})
-        ds = xr.concat([ds,ds2],dim='n_obs')
-    ds = ds.sortby('time')
-    ds['n_obs'] = ds['time']
-    ds = ds.drop_vars(['time'])
-    ds = ds.rename({'n_obs':'time'})
+def load_multisat_ssh_single_day(ssh_files, satellite_names):
+    datasets = []
+    for f, sat_name in zip(ssh_files, satellite_names):
+        ds = xr.open_dataset(f)
+        sat_var = xr.DataArray(np.full(ds.sizes['time'], sat_name, dtype=object), dims=['time'])
+        ds = ds.assign(satellite=sat_var)
+        datasets.append(ds)
     
-    return ds
+    ds_merged = xr.concat(datasets, dim='time')
+    return ds_merged
 
-# find coords of along track SSH observations on local grid
-def extract_tracked(ds, L_x, L_y, lon0, lat0, transformer_ll2xyz):
-    # ds = ds.copy()
-    # if nrt==False:
-    
-    # else:
-        # ds['longitude'] = ds['longitude']%360
-        # ds['longitude'] = (ds['longitude']-lon0+180)%360-180
-    
-    longitude = np.array(ds['longitude']).flatten()
-    longitude = (longitude-lon0+180)%360-180
-    
-    latitude = np.array(ds['latitude']).flatten()
-    sla_f = np.array(ds['sla_filtered']).flatten()
+def get_next_dir_level(dir_name, file_paths):
+    return [path.split(dir_name + os.sep, 1)[-1].split(os.sep, 1)[0] for path in file_paths if dir_name + os.sep in path]
 
-    sla_uf = np.array(ds['sla_unfiltered']).flatten()
+def load_ssh_by_date_range(start_date, end_date, dir_name = 'input_data/cmems_sla'):
+    ssh_files_total = GetListOfFiles(dir_name)
+    n_days = (end_date - start_date).days
+    dates = [start_date + timedelta(days = t) for t in range(n_days)]
+    ssh_datasets = []
+    print('Number of days to load: '+str(n_days))
+    for t in tqdm(range(n_days), desc="SSH loading progress"):
+        
+        ssh_files = [f for f in ssh_files_total if date(int(f[-20:-16]), int(f[-16:-14]), int(f[-14:-12])) == dates[t]]
+        sat_names = get_next_dir_level(dir_name, ssh_files)
 
-    # calculate ENU coords of along-track obs
-    x,y,z = ll2xyz(latitude, longitude, 0, lat0, 0, 0, transformer_ll2xyz)
+        if len(ssh_files)>0:
+            ds = load_multisat_ssh_single_day(ssh_files, sat_names)
+            ssh_datasets.append(ds)
+
+    return dates, ssh_datasets
+
+# empty a directory of any files
+def empty_directory(directory):
+    if os.path.exists(directory) and os.path.isdir(directory):
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+                
+
+def create_sla_chunks(start_date, end_date, chunk_dir = 'input_data/sla_cache', time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10, n_t = 30, cmems_dir = 'input_data/cmems_sla'):
+    dates, ssh_datasets = load_ssh_by_date_range(start_date - timedelta(days = n_t//2), end_date + timedelta(days = n_t//2), dir_name = cmems_dir)
+    ds = xr.concat(ssh_datasets, dim = 'time')
     
-    mask = (z > -1000e3) & (x < L_x / 2) & (x > -L_x / 2) & (y < L_y / 2) & (y > -L_y / 2)
-    x, y, sla_f, sla_uf = x[mask], y[mask], sla_f[mask], sla_uf[mask]
+    del ssh_datasets
     
-    tracks = np.stack([x, y, sla_f, sla_uf], axis = -1)
-    return tracks
+    ds['day_idx'] = (ds['time'] - np.datetime64(start_date - timedelta(days = n_t//2), 'ns'))// np.timedelta64(1, 'D')
+    time_vals = ds['day_idx'].values
+    time_bins = np.arange(0,365,time_bin_size)
+    lat_bins = np.arange(-90, 90, lat_bin_size)
+    lon_bins = np.arange(-180, 180, lon_bin_size)
+
+    # Compute bin indices
+    time_idx = np.digitize(time_vals, time_bins) - 1
+    lat_vals = ds['latitude'].values.ravel()
+    lon_vals = ds['longitude'].values.ravel()
+    lat_idx = np.digitize(lat_vals, lat_bins) - 1
+    lon_idx = np.digitize(lon_vals, lon_bins) - 1
+    
+    df = pd.DataFrame({
+        'time_bin': time_idx,
+        'lat_bin': lat_idx,
+        'lon_bin': lon_idx
+    })
+
+    # group data indices by bin
+    grouped = df.groupby(['time_bin', 'lat_bin', 'lon_bin']).indices
+    
+    output_dir = chunk_dir + '_' + str(start_date) + '_' + str(end_date)
+    os.makedirs(output_dir, exist_ok=True)
+    #empty any existing files left over from previous cache under same name
+    empty_directory(output_dir)
+    
+    for (t_bin, lat_bin, lon_bin), idx in tqdm(grouped.items(), desc="Saving chunked SSH into cache at "+output_dir):
+        # Extract data efficiently using precomputed indices
+        lat_subset = lat_vals[idx]
+        lon_subset = lon_vals[idx]
+        time_subset = time_vals[idx]
+        sla_unfiltered_subset = ds['sla_unfiltered'].values[idx]
+        sla_filtered_subset = ds['sla_filtered'].values[idx]
+        sat_subset = ds['satellite'].values[idx]
+
+        # Save data
+        filename = os.path.join(output_dir, f'bin_t{t_bin}_lat{lat_bin}_lon{lon_bin}.npy')
+        np.save(filename, np.column_stack((lat_subset, lon_subset, time_subset, sla_unfiltered_subset, sla_filtered_subset)))
+        np.save(filename[:-4] + '_sats.npy', sat_subset)
+        
+def get_query_bins(query_time_start, query_time_end, query_lat_min, query_lat_max, query_lon_min, query_lon_max, time_bins, lat_bins, lon_bins):
+    # Compute full bin edges (intervals)
+    time_bin_edges = np.append(time_bins, np.inf)  # Ensure upper edge coverage
+    lat_bin_edges = np.append(lat_bins, np.inf)
+    lon_bin_edges = np.append(lon_bins, np.inf)
+
+    # Find bins that overlap the query bounds
+    q_time_idx = np.where((time_bin_edges[:-1] <= query_time_end) & (time_bin_edges[1:] > query_time_start))[0]
+    q_lat_idx = np.where((lat_bin_edges[:-1] <= query_lat_max) & (lat_bin_edges[1:] > query_lat_min))[0]
+    q_lon_idx = np.where((lon_bin_edges[:-1] <= query_lon_max) & (lon_bin_edges[1:] > query_lon_min))[0]
+
+    return q_time_idx, q_lat_idx, q_lon_idx
+
+
+def load_query_data(query_time_start, query_time_end, query_lat_min, query_lat_max, query_lon_min, query_lon_max, time_bins, lat_bins, lon_bins, bin_dir='bins'):
+    if query_lon_max<query_lon_min:
+        #handle case where wrap around date line
+        t_bins, lat_bins_idx, lon_bins_idx = get_query_bins(query_time_start=query_time_start, 
+                                                            query_time_end=query_time_end, 
+                                                            query_lat_min = query_lat_min, 
+                                                            query_lat_max = query_lat_max, 
+                                                            query_lon_min = -180, 
+                                                            query_lon_max = query_lon_max, 
+                                                            time_bins = time_bins, 
+                                                            lat_bins = lat_bins, 
+                                                            lon_bins = lon_bins)
+        data_list = []
+        sat_list = []
+        for t in t_bins:
+            for lat_i in lat_bins_idx:
+                for lon_i in lon_bins_idx:
+                    filename = os.path.join(bin_dir, f'bin_t{t}_lat{lat_i}_lon{lon_i}.npy')
+                    if os.path.exists(filename):
+                        bin_data = np.load(filename, allow_pickle=False)
+                        sat_data = np.load(filename[:-4] + '_sats.npy', allow_pickle=True)
+                        data_list.append(bin_data)
+                        sat_list.append(sat_data)
+
+        data_left = np.concatenate(data_list)
+        sats_left = np.concatenate(sat_list)
+
+        t_bins, lat_bins_idx, lon_bins_idx = get_query_bins(query_time_start=query_time_start, 
+                                                            query_time_end=query_time_end, 
+                                                            query_lat_min = query_lat_min, 
+                                                            query_lat_max = query_lat_max, 
+                                                            query_lon_min = query_lon_min, 
+                                                            query_lon_max = 180, 
+                                                            time_bins = time_bins, 
+                                                            lat_bins = lat_bins, 
+                                                            lon_bins = lon_bins)
+        data_list = []
+        sat_list = []
+        for t in t_bins:
+            for lat_i in lat_bins_idx:
+                for lon_i in lon_bins_idx:
+                    filename = os.path.join(bin_dir, f'bin_t{t}_lat{lat_i}_lon{lon_i}.npy')
+                    if os.path.exists(filename):
+                        bin_data = np.load(filename, allow_pickle=False)
+                        sat_data = np.load(filename[:-4] + '_sats.npy', allow_pickle=True)
+                        data_list.append(bin_data)
+                        sat_list.append(sat_data)
+
+        data_right = np.concatenate(data_list)
+        sats_right = np.concatenate(sat_list)
+        data = np.concatenate((data_left, data_right))
+        sats = np.concatenate((sats_left, sats_right))
+    else:
+        t_bins, lat_bins_idx, lon_bins_idx = get_query_bins(query_time_start=query_time_start, 
+                                                            query_time_end=query_time_end, 
+                                                            query_lat_min = query_lat_min, 
+                                                            query_lat_max = query_lat_max, 
+                                                            query_lon_min = query_lon_min, 
+                                                            query_lon_max = query_lon_max, 
+                                                            time_bins = time_bins, 
+                                                            lat_bins = lat_bins, 
+                                                            lon_bins = lon_bins)
+        data_list = []
+        sat_list = []
+        for t in t_bins:
+            for lat_i in lat_bins_idx:
+                for lon_i in lon_bins_idx:
+                    filename = os.path.join(bin_dir, f'bin_t{t}_lat{lat_i}_lon{lon_i}.npy')
+                    if os.path.exists(filename):
+                        bin_data = np.load(filename, allow_pickle=False)
+                        sat_data = np.load(filename[:-4] + '_sats.npy', allow_pickle=True)
+                        data_list.append(bin_data)
+                        sat_list.append(sat_data)
+
+        data = np.concatenate(data_list)
+        sats = np.concatenate(sat_list)    
+    
+    
+    return data, sats
+
+def extract_tracks(t_mid, lon0, lat0, coord_grid, transformer_ll2xyz, time_bins, lon_bins, lat_bins, n_t = 30, L_x=960e3, L_y=960e3, filtered=False,chunk_dir='input_data/sla_cache'):
+    lon_grid = coord_grid[:,:,0]
+    lat_grid = coord_grid[:,:,1]
+    lat_max = np.max(lat_grid)+0.1
+    lat_min = np.min(lat_grid)-0.1
+    lon_max = np.max(lon_grid[:,-1]) + 0.1 #handles wrap around dateline
+    lon_min = np.min(lon_grid[:,0]) - 0.1 #handles wrap around dateline
+
+    
+    
+    data, sat = load_query_data(query_time_start = t_mid - n_t//2,
+                                 query_time_end = t_mid + n_t//2,
+                                 query_lat_min = lat_min,
+                                 query_lat_max = lat_max,
+                                 query_lon_min = lon_min,
+                                 query_lon_max = lon_max,
+                                 time_bins = time_bins,
+                                 lat_bins = lat_bins,
+                                 lon_bins = lon_bins,
+                                 bin_dir=chunk_dir
+                                )
+    
+    latitude = data[:,0]
+    longitude = data[:,1]
+    day = data[:,2] - (t_mid - n_t//2)
+    
+    if filtered:
+        sla = data[:,4]
+    else:
+        sla = data[:,3]
+        
+    mask = (day >= 0) & (day<n_t)
+    
+    longitude, latitude, sla, day, sat = longitude[mask], latitude[mask], sla[mask], day[mask], sat[mask]
+    
+    # Normalize longitude
+    longitude = (longitude - lon0 + 180) % 360 - 180
+
+    # Calculate ENU coordinates
+    x, y, z = ll2xyz(latitude, longitude, 0, lat0, 0, 0, transformer_ll2xyz)
+
+    mask = (z > -1e6) & (-L_x / 2 < x) & (x < L_x / 2) & (-L_y / 2 < y) & (y < L_y / 2)
+    
+    return np.column_stack((x[mask], y[mask], sla[mask], day[mask])), sat[mask]
+
+
+
+def bin_ssh(data, L_x = 960e3, L_y = 960e3, n = 128, n_t = 30, filtered = False):
+    ssh_grid = np.zeros((n_t,n,n))
+    data[np.isnan(data)] = 0
+    
+    for t in range(n_t):
+        mask = (data[:,3] == t)
+        x, y, ssh = data[mask, 0], data[mask, 1], data[mask, 2]
+        
+        input_grid, _,_,_ = stats.binned_statistic_2d(x,y,ssh, statistic = 'mean', bins=n, range = [[-L_x/2, L_x/2],[-L_y/2, L_y/2]])
+        input_grid = np.rot90(input_grid)
+        input_grid[np.isnan(input_grid)] = 0
+
+        ssh_grid[t,:,:] = input_grid
+        
+    return ssh_grid
+
+
+def get_ssh(r,t,coord_grid,transformer_ll2xyz,n_t = 30, n = 128, L_x = 960e3, L_y = 960e3, time_bins=time_bins, lon_bins=lon_bins, lat_bins=lat_bins, leave_out_altimeters=True, withhold_sat='random', filtered=False, chunk_dir='input_data/sla_cache'):
+
+    mid = n//2
+    neighbors = [(r, mid-1, mid-1), (r, mid-1, mid), (r, mid, mid-1), (r, mid, mid)]
+    lon0 = np.mean([coord_grid[neighbor[0], neighbor[1], neighbor[2], 0] for neighbor in neighbors])
+    lat0 = np.mean([coord_grid[neighbor[0], neighbor[1], neighbor[2], 1] for neighbor in neighbors])
+    
+    d, s = extract_tracks(t_mid = t,
+                          lon0 = lon0,
+                          lat0 = lat0,
+                          coord_grid = coord_grid[r,],
+                          transformer_ll2xyz = transformer_ll2xyz, 
+                          time_bins=time_bins, 
+                          lon_bins=lon_bins, 
+                          lat_bins=lat_bins,
+                          n_t = n_t,
+                          L_x = L_x,
+                          L_y = L_y,
+                          filtered = filtered,
+                          chunk_dir = chunk_dir
+                         )
+    
+    if leave_out_altimeters:
+        sats_all = np.unique(s)
+        if withhold_sat == 'random':
+            # randomly select 1 satellite to withhold (e.g. for ground truth during training)
+            withhold = np.random.choice(sats_all)
+        else:
+            # specify either 1 sat or list of sats to withhold (e.g. for inference while maintaining independent sat for validation)
+            withhold = withhold_sat
+        mask = (s != withhold) if isinstance(withhold, str) else ~np.isin(s, withhold)
+        
+        d_out = d[~mask]
+        d, s = d[mask], s[mask]
+        
+        out_tracks = []
+        for t in range(n_t):
+            mask = (d_out[:,3] == t)
+            out_tracks.append(d_out[mask,:])
+            
+        len_max = max([d.shape[0] for d in out_tracks])
+        out_data = np.zeros((n_t,len_max,d_out.shape[-1]))
+        for t in range(n_t):
+            out_data[t,:out_tracks[t].shape[0],] = out_tracks[t]
+        
+    else:
+        out_data = None
+    
+    ssh_grid = bin_ssh(d, L_x = L_x, L_y = L_y, n = n, n_t = n_t, filtered = filtered)
+    
+    return ssh_grid, out_data
