@@ -7,12 +7,13 @@ from scipy import interpolate
 from scipy.spatial import Delaunay
 from scipy.interpolate import LinearNDInterpolator
 import xarray as xr 
-from datetime import date, timedelta
+import datetime
 import os
 from tqdm import tqdm
 import pandas as pd
 import shutil
 import h5py
+import re
 
 # function to list all files within a directory including within any subdirectories
 def GetListOfFiles(dirName, ext = '.nc'):
@@ -175,12 +176,12 @@ def get_next_dir_level(dir_name, file_paths):
 def load_ssh_by_date_range(start_date, end_date, dir_name = 'input_data/cmems_sla'):
     ssh_files_total = GetListOfFiles(dir_name)
     n_days = (end_date - start_date).days
-    dates = [start_date + timedelta(days = t) for t in range(n_days)]
+    dates = [start_date + datetime.timedelta(days = t) for t in range(n_days)]
     ssh_datasets = []
     print('Number of days to load: '+str(n_days))
     for t in tqdm(range(n_days), desc="SSH loading progress"):
         
-        ssh_files = [f for f in ssh_files_total if date(int(f[-20:-16]), int(f[-16:-14]), int(f[-14:-12])) == dates[t]]
+        ssh_files = [f for f in ssh_files_total if datetime.date(int(f[-20:-16]), int(f[-16:-14]), int(f[-14:-12])) == dates[t]]
         sat_names = get_next_dir_level(dir_name, ssh_files)
 
         if len(ssh_files)>0:
@@ -215,61 +216,95 @@ def convert_np_cache_to_hdf5(np_dir = 'input_data/sla_cache_2024-03-01_2024-04-0
     if delete_np:
         print('deleting .npy cache at: '+np_dir)
         shutil.rmtree(np_dir)
+        
+def find_covering_cache(start_date, end_date, chunk_dir):
+    cache_files = [f for f in os.listdir(chunk_dir) if f.endswith('.h5')]
+    
+    print(cache_files)
+    
+    best_match = None
+    min_days_offset = None
+    final_t_length = None
+    
+    for cache_file in cache_files:
+        match = re.search(r'_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})', cache_file)
+        if match:
+            cache_start = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
+            cache_end = datetime.datetime.strptime(match.group(2), "%Y-%m-%d").date()
+            
+            if cache_start <= start_date and cache_end >= end_date:
+                print('triggered')
+                days_offset = (start_date - cache_start).days
+                days_length = (cache_end - cache_start).days
+                
+                if best_match is None or min_days_offset is None or days_offset < min_days_offset:
+                    best_match = cache_file
+                    min_days_offset = days_offset
+                    final_t_length = days_length
+    
+    return best_match, min_days_offset, final_t_length
 
 def create_sla_chunks(start_date, end_date, chunk_dir = 'input_data/sla_cache', time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10, n_t = 30, cmems_dir = 'input_data/cmems_sla',force_recache=False):
     
-    output_dir = chunk_dir + '_' + str(start_date) + '_' + str(end_date)
-    if (os.path.exists(output_dir+'.h5') and force_recache) or (not os.path.exists(output_dir+'.h5')):
+    existing_cache, days_offset, t_length = find_covering_cache(start_date, end_date, chunk_dir)
     
-        dates, ssh_datasets = load_ssh_by_date_range(start_date - timedelta(days = n_t//2), end_date + timedelta(days = n_t//2), dir_name = cmems_dir)
-        ds = xr.concat(ssh_datasets, dim = 'time')
-
-        del ssh_datasets
-
-        ds['day_idx'] = (ds['time'] - np.datetime64(start_date - timedelta(days = n_t//2), 'ns'))// np.timedelta64(1, 'D')
-        time_vals = ds['day_idx'].values
-        time_bins = np.arange(0,365,time_bin_size)
-        lat_bins = np.arange(-90, 90, lat_bin_size)
-        lon_bins = np.arange(-180, 180, lon_bin_size)
-
-        # Compute bin indices
-        time_idx = np.digitize(time_vals, time_bins) - 1
-        lat_vals = ds['latitude'].values.ravel()
-        lon_vals = ds['longitude'].values.ravel()
-        lat_idx = np.digitize(lat_vals, lat_bins) - 1
-        lon_idx = np.digitize(lon_vals, lon_bins) - 1
-
-        df = pd.DataFrame({
-            'time_bin': time_idx,
-            'lat_bin': lat_idx,
-            'lon_bin': lon_idx
-        })
-
-        # group data indices by bin
-        grouped = df.groupby(['time_bin', 'lat_bin', 'lon_bin']).indices
+    if existing_cache is not None and not force_recache:
+        print(f"Using existing cache: {existing_cache}, offset by {days_offset} days")
+        return chunk_dir + '/' + existing_cache, days_offset, t_length + n_t
     
-        os.makedirs(output_dir, exist_ok=True)
-        #empty any existing files left over from previous cache under same name
-        empty_directory(output_dir)
+    output_dir = chunk_dir + '/sla_cache_' + str(start_date) + '_' + str(end_date)
+    print(f"Creating new cache: {output_dir}")
+    # if (os.path.exists(output_dir+'.h5') and force_recache) or (not os.path.exists(output_dir+'.h5')):
+    
+    dates, ssh_datasets = load_ssh_by_date_range(start_date - datetime.timedelta(days = n_t//2), end_date + datetime.timedelta(days = n_t//2), dir_name = cmems_dir)
+    ds = xr.concat(ssh_datasets, dim = 'time')
 
-        for (t_bin, lat_bin, lon_bin), idx in tqdm(grouped.items(), desc="Saving chunked SSH into cache at "+output_dir):
-            # Extract data efficiently using precomputed indices
-            lat_subset = lat_vals[idx]
-            lon_subset = lon_vals[idx]
-            time_subset = time_vals[idx]
-            sla_unfiltered_subset = ds['sla_unfiltered'].values[idx]
-            sla_filtered_subset = ds['sla_filtered'].values[idx]
-            sat_subset = ds['satellite'].values[idx]
+    del ssh_datasets
 
-            # Save data
-            filename = os.path.join(output_dir, f'bin_t{t_bin}_lat{lat_bin}_lon{lon_bin}.npy')
-            np.save(filename, np.column_stack((lat_subset, lon_subset, time_subset, sla_unfiltered_subset, sla_filtered_subset)))
-            np.save(filename[:-4] + '_sats.npy', sat_subset)
-        
-        
-        convert_np_cache_to_hdf5(np_dir = output_dir, hdf5_path = output_dir+'.h5',delete_np=True)
-    else:
-        print('skipping cache saving since already exists and force_recache=False')
+    ds['day_idx'] = (ds['time'] - np.datetime64(start_date - datetime.timedelta(days = n_t//2), 'ns'))// np.timedelta64(1, 'D')
+    time_vals = ds['day_idx'].values
+    time_bins = np.arange(0,365,time_bin_size)
+    lat_bins = np.arange(-90, 90, lat_bin_size)
+    lon_bins = np.arange(-180, 180, lon_bin_size)
+
+    # Compute bin indices
+    time_idx = np.digitize(time_vals, time_bins) - 1
+    lat_vals = ds['latitude'].values.ravel()
+    lon_vals = ds['longitude'].values.ravel()
+    lat_idx = np.digitize(lat_vals, lat_bins) - 1
+    lon_idx = np.digitize(lon_vals, lon_bins) - 1
+
+    df = pd.DataFrame({
+        'time_bin': time_idx,
+        'lat_bin': lat_idx,
+        'lon_bin': lon_idx
+    })
+
+    # group data indices by bin
+    grouped = df.groupby(['time_bin', 'lat_bin', 'lon_bin']).indices
+
+    os.makedirs(output_dir, exist_ok=True)
+    #empty any existing files left over from previous cache under same name
+    empty_directory(output_dir)
+
+    for (t_bin, lat_bin, lon_bin), idx in tqdm(grouped.items(), desc="Saving chunked SSH into cache at "+output_dir):
+        # Extract data efficiently using precomputed indices
+        lat_subset = lat_vals[idx]
+        lon_subset = lon_vals[idx]
+        time_subset = time_vals[idx]
+        sla_unfiltered_subset = ds['sla_unfiltered'].values[idx]
+        sla_filtered_subset = ds['sla_filtered'].values[idx]
+        sat_subset = ds['satellite'].values[idx]
+
+        # Save data
+        filename = os.path.join(output_dir, f'bin_t{t_bin}_lat{lat_bin}_lon{lon_bin}.npy')
+        np.save(filename, np.column_stack((lat_subset, lon_subset, time_subset, sla_unfiltered_subset, sla_filtered_subset)))
+        np.save(filename[:-4] + '_sats.npy', sat_subset)
+
+
+    convert_np_cache_to_hdf5(np_dir = output_dir, hdf5_path = output_dir+'.h5',delete_np=True)
+    
+    return output_dir + '.h5', None, None
         
 
         
