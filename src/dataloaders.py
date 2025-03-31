@@ -10,7 +10,30 @@ import h5py
 
 
 class NeurOST_dataset(Dataset):
-    def __init__(self, sst_zarr, start_date, end_date, N_t, mean_ssh, std_ssh, mean_sst, std_sst, coord_grids, n = 128, L_x = 960e3, L_y = 960e3, force_recache = False, leave_out_altimeters=True, withhold_sat='random', filtered=False, use_sst=True, time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10, ssh_out_n_max = 1000, multiprocessing=False):
+    def __init__(self, 
+                 sst_zarr, 
+                 start_date, 
+                 end_date, 
+                 N_t, 
+                 mean_ssh, 
+                 std_ssh, 
+                 mean_sst, 
+                 std_sst, 
+                 coord_grids, 
+                 n = 128, 
+                 L_x = 960e3, 
+                 L_y = 960e3, 
+                 force_recache = False, 
+                 leave_out_altimeters = True, 
+                 withhold_sat = 'random', 
+                 filtered = False, 
+                 use_sst = True, 
+                 time_bin_size = 10, 
+                 lon_bin_size = 10, 
+                 lat_bin_size = 10, 
+                 ssh_out_n_max = 1000, 
+                 multiprocessing=False
+                ):
         self.sst_zarr = sst_zarr
         self.start_date = start_date
         self.end_date = end_date
