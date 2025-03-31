@@ -4,7 +4,9 @@ import sys
 from glob import glob
 import copernicusmarine as cm
 import xarray as xr
-cm.login()
+
+if not os.path.exists(os.path.expanduser("~/.copernicusmarine/.copernicusmarine-credentials")):
+    cm.login()
 
 # #############################################
 # # MUR SST
