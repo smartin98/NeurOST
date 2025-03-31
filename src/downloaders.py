@@ -39,7 +39,7 @@ start_date_string = format_date_to_string(date_start)
 end_date_string = format_date_to_string(date_end)
 
 n_days = (date_end-date_start).days
-for t in range(n_days):
+for t in range(n_days + 1):
 
     command = 'podaac-data-downloader -c MUR-JPL-L4-GLOB-v4.1 -d ./input_data/mur_sst_tmp --start-date '+format_date_to_string(date_start+timedelta(days=t))+' --end-date '+format_date_to_string(date_start+timedelta(days=t))+' -b="-180,-90,180,90"'
     
@@ -57,7 +57,7 @@ for t in range(n_days):
             if remove_mur_nc:
                 os.remove(f)
         else:
-            sst = ds_sst['analysed_sst'].load().astype('float32').coarsen({'lon':5,'lat':5},boundary = 'trim').mean()
+            sst = ds_sst[['analysed_sst','sea_ice_fraction']].load().astype('float32').coarsen({'lon':5,'lat':5},boundary = 'trim').mean()
             sst = sst.chunk({'time':1,'lon':1000,'lat':1000})
             sst.to_zarr('input_data/mur_coarse_zarrs/' + str(sst['time'].values[0])[:10].replace('-','') +'.zarr')
             if remove_mur_nc:

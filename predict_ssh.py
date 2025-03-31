@@ -9,6 +9,7 @@ import datetime
 import zarr
 import argparse
 import signal
+import tqdm
 
 parser = argparse.ArgumentParser()
 
@@ -34,6 +35,8 @@ parser.add_argument('--time_bin_size', type = float, default = 10, help = "Time 
 parser.add_argument('--lon_bin_size', type = float, default = 10, help = "Longitude bin size (in deg) for SSH cache")
 parser.add_argument('--lat_bin_size', type = float, default = 10, help = "Latitude bin size (in deg) for SSH cache")
 parser.add_argument('--output_zarr_dir', type = str, default = 'predictions/unmerged_zarrs/', help = "Path to directory within which unmerged predictions will be stored in zarr store.")
+parser.add_argument('--n_cpu_workers', type = int, default = 1, help = "Number of CPU workers used by dataloader to parallelize data loading (strongly recommend setting as high as your resources allow to ensure GPU saturation)")
+parser.add_argument('--batch_size', type = int, default = 32, help = "Number of examples per batch, adjust based on your GPU memory.")
 
 args = parser.parse_args()
 
@@ -46,6 +49,11 @@ if args.withheld_sats is None:
     leave_out_altimeters = False
 else:
     leave_out_altimeters = True
+
+if args.n_cpu_workers <=1:
+    multiprocessing = False
+else:
+    multiprocessing = True
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
 
@@ -74,6 +82,8 @@ dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
                           time_bin_size = args.time_bin_size,
                           lon_bin_size = args.lon_bin_size,
                           lat_bin_size = args.lat_bin_size,
+                          ssh_out_max_size = 1000,
+                          multiprocessing = multiprocessing,
                          )
 
 if args.no_sst:
@@ -93,7 +103,15 @@ except:
 
 model.eval()
 
-pred_zarr_path = os.path.join(args.output_zarr_dir, args.experiment_name + '_unmerged_preds_' + str(start_date) + '_' + str(end_date) + '.zarr')
+pred_zarr_path = os.path.join(args.output_zarr_dir, args.experiment_name + '_unmerged_preds_' + str(start_date).replace('-','') + '_' + str(end_date).replace('-','') + '.zarr')
+
+dataloader = DataLoader(dataset, 
+                        batch_size = args.batch_size, 
+                        shuffle = False, 
+                        num_workers = args.n_cpu_workers, 
+                        worker_init_fn = lambda worker_id: worker_init_fn(worker_id, dataset), # worker_init_fn defined in src.dataloaders.py
+                        persistent_workers = True
+                       )
 
 
 #########
@@ -126,5 +144,40 @@ if os.path.exists(pred_zarr_path):
 ##########
 
 # initialise zarr store to store unmerged patch predictions
-pred = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
+pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
+
+data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=args.n_cpus)
+
+current_idx = 0
+
+r_idxs = coord_grids.shape[0]
+t_idxs = np.arange((end_date - start_date).days)
+
+t_idxs, r_idxs = np.meshgrid(t_idxs, r_idxs)
+
+t_idxs, r_idxs = t_idxs.ravel(), r_idxs.ravel()
+
+with torch.no_grad():
+    for input_data, _ in tqdm(data_loader, desc = "Running batch predictions"):
+        
+        input_data = input_data.to(device)
+        
+        t_indexer = t_idxs[current_idx:current_idx + len(input_data)]
+        r_indexer = r_idxs[current_idx:current_idx + len(input_data)]
+        
+        preds = model(input_data)
+        preds = preds.cpu().numpy()[:, int(args.n_t / 2), 0, :, :]
+        preds = preds * args.std_ssh + args.mean_ssh
+        
+        # save slice if batch all within one region (faster writing)
+        if r_indexer[0] == r_indexer[-1]:
+            pred_store[t_indexer[0]:t_indexer[-1]+1,r_indexer[0]] = preds
+        else:
+            # resort to saving each batch item individually if not all within one region
+            for i in range(t_indexer.shape[0]):
+                pred_store[int(t_indexer[i]),int(r_indexer[i])] = preds[i,]
+                
+        current_idx += len(input_data)
+        
+print('Inference complete! Un-merged patch predictions saved at: ' + pred_zarr_path + ', run map_merging script to create final gridded product.')
 

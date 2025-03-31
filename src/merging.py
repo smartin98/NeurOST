@@ -1,13 +1,12 @@
 import numpy as np
 import pyinterp
-from tqdm import tqdm
 import xarray as xr
 import pandas as pd
 import os
 import datetime
 from scipy.spatial import cKDTree
 from scipy.signal import convolve
-
+import zarr
 
 # check if file exists and delete if it does
 def remove_file(file_path):
@@ -29,7 +28,7 @@ def find_closest_element(arr, target, above=True):
     else:
         idx = np.searchsorted(arr, target, side='left') - 1
     
-    # edge cases where index is out of bounds
+    # Handle edge cases where index is out of bounds
     if idx == len(arr):
         return arr[-1]
     elif idx == -1:
@@ -133,8 +132,7 @@ def numerical_derivative(data,axis,order=1,N=9,method='classic',h=7.5e3):
             shift_val = int(i - (N-1)/2)
             aux[:,i,:,:] = coeff[i]*np.roll(data,shift = shift_sign*shift_val, axis = ax_idx)/denom
         return np.sum(aux,axis=1)
-    
-    
+
 def numerical_derivative_conv(data, axis, order=1, N=9, method='classic', h=7.5e3):
     if order != 1:
         raise Exception("Only 1st derivatives implemented to date")
@@ -150,10 +148,13 @@ def numerical_derivative_conv(data, axis, order=1, N=9, method='classic', h=7.5e
         if method == 'SNR4':
             coeff = np.array([-2, -1, 16, 27, 0, -27, -16, 1, 2])
             denom = 96 * h
+        # Add more cases for N and method as needed
 
+        # Construct the stencil (kernel) for convolution
         kernel = coeff.reshape(1, -1) if axis == 'x' else -coeff.reshape(-1, 1)
         kernel = np.expand_dims(kernel,axis=0)/denom
         
+        # Apply convolution
         result = convolve(data, kernel, mode='same')
 
         return result
@@ -163,15 +164,15 @@ def bilinear_interpolation(lat_data, lon_data, values, lat_regular, lon_regular)
     latlon_data = np.column_stack((lat_data, lon_data))
     latlon_regular = np.dstack(np.meshgrid(lat_regular, lon_regular)).reshape(-1, 2)
     
-    # KD-Tree for efficient nearest-neighbour search
+    # Construct a KD-Tree for efficient nearest-neighbor search
     tree = cKDTree(latlon_data)
     distances, indices = tree.query(latlon_regular, k=4)  # Find 4 nearest neighbors
     
-    # weights for bilinear interpolation
+    # Calculate weights for bilinear interpolation
     weights = 1.0 / distances**2
     weights/=np.sum(weights, axis=1, keepdims=True)
     
-    # bilinear interpolation
+    # Perform bilinear interpolation
     interpolated_values = np.sum(values[indices]*weights, axis=1)
     
     return interpolated_values.reshape(lon_regular.shape[0],lat_regular.shape[0])
@@ -194,7 +195,7 @@ def merge_maps(data, kernel, lon_min = -180,lon_max = 180, lat_min = -70, lat_ma
     n_regions = data.shape[0]
     n_vars = data.shape[-1]-2
     
-    # progress bar using tqdm
+    # Create a progress bar using tqdm
     if progress:
         progress_bar = tqdm(total=n_regions, ncols=80)
     
@@ -260,9 +261,7 @@ def merge_maps(data, kernel, lon_min = -180,lon_max = 180, lat_min = -70, lat_ma
     return pred_sum/np.expand_dims(kernel_sum,axis=-1), mx, my
 
 
-
-
-def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = False, dsla_dy = None, dsla_dx = None, d2sla_dx2 = None, d2sla_dy2 = None, d2sla_dxy = None, mask_coast_dist=10, network_name = 'SimVP_SSH'):
+def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = False, dsla_dy = None, dsla_dx = None, d2sla_dx2 = None, d2sla_dy2 = None, d2sla_dxy = None, mask_coast_dist=10, network_name = 'SimVP_SSH', mask_ice = True, sst_zarr_dir = 'input_data/mur_coarse_zarrs/'):
     """
     Takes global SLA map numpy array and create nicely formatted xarray dataset.
 
@@ -277,6 +276,8 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         ds_mask: xarray dataset, land mask from 2023a_SSH_mapping_OSE data challenge with coords renamed and shifted to longitude in [0,360]
         ds_dist: xarray dataset, distance to nearest coast from 2023a_SSH_mapping_OSE data challenge with coords renamed and shifted to longitude in [0,360]
         network_name: string, name of NN method used to produce the predictions
+        mask_ice: Boolean, uses sea_ice_concentration from MUR SST to mask out sea ice if True.
+        sst_zarr_dir: string, path to the MUR SST zarr stores for sea ice masking.
         
 
     Returns:
@@ -294,62 +295,60 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         da.attrs['long_name'] = 'Sea Level Anomaly'
         da.attrs['units'] = 'm'
         da.attrs['description'] = 'SLA mapped using '+ network_name
+        da.attrs['standard_name'] = 'sea_surface_height_above_sea_level'
+        da.attrs['coverage_content_type'] = 'modelResult'
+        da.attrs['valid_range'] = np.array([-1e9,1e9])
+        da.attrs['grid_mapping'] = 'crs'
+        
         ds_mdt = ds_mdt.interp_like(da, method = 'linear')
         da_mdt = ds_mdt['mdt']
         da_adt = da_mdt + da
         da_adt.attrs['long_name'] = 'Absolute Dynamic Topography'
         da_adt.attrs['units'] = 'm'
         da_adt.attrs['description'] = 'ADT from CNES/CLS MDT + SLA mapped using '+ network_name
+        da_adt.attrs['standard_name'] = 'sea_surface_height_above_sea_geoid'
+        da_adt.attrs['coverage_content_type'] = 'modelResult'
+        da_adt.attrs['valid_range'] = np.array([-1e9,1e9])
+        da_adt.attrs['grid_mapping'] = 'crs'
+        
         ds = xr.Dataset({'sla':da, 'adt':da_adt}) 
         ds['longitude'] = np.mod(ds['longitude'],360) # convert to 0-360 for easier comparison to other maps
         ds = ds.sortby('longitude')
         ds['latitude'] = ds['latitude'].assign_attrs({'units':'degrees_north','_CoordinateAxisType':'Lat'})
         ds['longitude'] = ds['longitude'].assign_attrs({'units':'degrees_east','_CoordinateAxisType':'Lon'})
     
-    else:
-        
+    else:        
         da = xr.DataArray(data=np.expand_dims(np.swapaxes(sla,0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
         da.attrs['long_name'] = 'Sea Level Anomaly'
         da.attrs['units'] = 'm'
         da.attrs['description'] = 'SLA mapped using '+ network_name
-        
+        da.attrs['standard_name'] = 'sea_surface_height_above_sea_level'
+        da.attrs['coverage_content_type'] = 'modelResult'
+        da.attrs['valid_range'] = np.array([-1e9,1e9])
+        da.attrs['grid_mapping'] = 'crs'
+
         da_dx = xr.DataArray(data=np.expand_dims(np.swapaxes(dsla_dx,0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
-        da_dx.attrs['long_name'] = 'dSLA/dx'
-        da_dx.attrs['units'] = ''
-        da_dx.attrs['description'] = 'dSLA/dx mapped using '+ network_name
         
         
         da_dy = xr.DataArray(data=np.expand_dims(np.swapaxes(dsla_dy,0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
-        da_dy.attrs['long_name'] = 'dSLA/dy'
-        da_dy.attrs['units'] = ''
-        da_dy.attrs['description'] = 'dSLA/dy mapped using '+ network_name
         
         da_dx2 = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dx2,0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
-        da_dx2.attrs['long_name'] = 'd2SLA/dx2'
-        da_dx2.attrs['units'] = '-1/m'
-        da_dx2.attrs['description'] = 'd2SLA/dx2 mapped using '+ network_name
         
         da_dy2 = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dy2,0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
-        da_dy2.attrs['long_name'] = 'd2SLA/dy2'
-        da_dy2.attrs['units'] = '-1/m'
-        da_dy2.attrs['description'] = 'd2SLA/dy2 mapped using '+ network_name
         
         da_dxy = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dxy,0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
-        da_dxy.attrs['long_name'] = 'd2SLA/dxy'
-        da_dxy.attrs['units'] = '-1/m'
-        da_dxy.attrs['description'] = 'd2SLA/dxy mapped using '+ network_name
             
         ds_mdt = ds_mdt.interp_like(da, method = 'linear')
         da_mdt = ds_mdt['mdt']
@@ -357,69 +356,161 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         da_adt.attrs['long_name'] = 'Absolute Dynamic Topography'
         da_adt.attrs['units'] = 'm'
         da_adt.attrs['description'] = 'ADT from CNES/CLS MDT + SLA mapped using '+ network_name
+        da_adt.attrs['standard_name'] = 'sea_surface_height_above_sea_geoid'
+        da_adt.attrs['coverage_content_type'] = 'modelResult'
+        da_adt.attrs['valid_range'] = np.array([-1e9,1e9])
+        da_adt.attrs['grid_mapping'] = 'crs'
+        
         ds = xr.Dataset({'sla':da, 'adt':da_adt, 'dSLA_dx':da_dx, 'dSLA_dy':da_dy, 'd2SLA_dx2':da_dx2, 'd2SLA_dy2':da_dy2, 'd2SLA_dxy':da_dxy}) 
         ds['longitude'] = np.mod(ds['longitude'],360) # convert to 0-360 for easier comparison to other maps
         ds = ds.sortby('longitude')
         ds['latitude'] = ds['latitude'].assign_attrs({'units':'degrees_north','_CoordinateAxisType':'Lat'})
         ds['longitude'] = ds['longitude'].assign_attrs({'units':'degrees_east','_CoordinateAxisType':'Lon'})
-
-    ds_dist = ds_dist.interp(latitude=ds.latitude, longitude=ds.longitude, method='nearest')
-    ds_mask = ds_mask.interp(latitude=ds.latitude, longitude=ds.longitude, method='nearest')
+        
+        g = 9.81
+        om = 2 * np.pi / 86164
+        
+        f = 2 * om * np.sin(np.deg2rad(ds['latitude']))
+        
+        # currents:
+        ds['ugosa'] = (-g/f)*ds['dSLA_dy']
+        ds['vgosa'] = (g/f)*ds['dSLA_dx']
+        ds.drop(['dSLA_dx', 'dSLA_dy'])
+        ds['ugos'] = ds['ugosa'] + ds_mdt['u']
+        ds['vgos'] = ds['vgosa'] + ds_mdt['v']
+        
+        ds['ugosa'].attrs['long_name'] = 'eastward surface geostrophic current velocity anomaly'
+        ds['ugosa'].attrs['standard_name'] = 'surface_geostrophic_eastward_sea_water_velocity_anomaly'
+        ds['ugosa'].attrs['units'] = 'm/s'
+        ds['ugosa'].attrs['coverage_content_type'] = 'modelResult'
+        ds['ugosa'].attrs['valid_range'] = np.array([-1e9,  1e9])
+        ds['ugosa'].attrs['grid_mapping'] = 'crs'
+        
+        ds['vgosa'].attrs['long_name'] = 'northward surface geostrophic current velocity anomaly'
+        ds['vgosa'].attrs['standard_name'] = 'surface_geostrophic_northward_sea_water_velocity_anomaly'
+        ds['vgosa'].attrs['units'] = 'm/s'
+        ds['vgosa'].attrs['coverage_content_type'] = 'modelResult'
+        ds['vgosa'].attrs['valid_range'] = np.array([-1e9,  1e9])
+        ds['vgosa'].attrs['grid_mapping'] = 'crs'
+        
+        ds['ugos'].attrs['long_name'] = 'eastward surface geostrophic current velocity'
+        ds['ugos'].attrs['standard_name'] = 'surface_geostrophic_eastward_sea_water_velocity'
+        ds['ugos'].attrs['units'] = 'm/s'
+        ds['ugos'].attrs['coverage_content_type'] = 'modelResult'
+        ds['ugos'].attrs['valid_range'] = np.array([-1e9,  1e9])
+        ds['ugos'].attrs['grid_mapping'] = 'crs'
+        
+        ds['vgos'].attrs['long_name'] = 'northward surface geostrophic current velocity'
+        ds['vgos'].attrs['standard_name'] = 'surface_geostrophic_northward_sea_water_velocity'
+        ds['vgos'].attrs['units'] = 'm/s'
+        ds['vgos'].attrs['coverage_content_type'] = 'modelResult'
+        ds['vgos'].attrs['valid_range'] = np.array([-1e9,  1e9])
+        ds['vgos'].attrs['grid_mapping'] = 'crs'
+        
+        
+        # dynamics:
+        ds['zeta'] = (g/f)*(ds['d2SLA_dx2']+ds['d2SLA_dy2'])
+        ds['sn'] = -2 * (g / f) * ds['d2SLA_dxy']
+        ds['ss'] = (g / f) * (ds['d2SLA_dx2'] - ds['d2SLA_dy2'])
+        ds = ds.drop(['d2SLA_dx2','d2SLA_dy2','d2SLA_dxy'])
+        
+        ds['zeta'].attrs['long_name'] = 'relative vorticity due to surface geostrophic current anomaly'
+        ds['zeta'].attrs['standard_name'] = 'surface_geostrophic_zeta'
+        ds['zeta'].attrs['units'] = '1/s'
+        ds['zeta'].attrs['coverage_content_type'] = 'modelResult'
+        ds['zeta'].attrs['valid_range'] = np.array([-1e9,  1e9])
+        ds['zeta'].attrs['grid_mapping'] = 'crs'
+        ds['zeta'].attrs['description'] = '(g/f)*(d2SLA/dx2+d2SLA_dy2)'
+        
+        ds['sn'].attrs['long_name'] = 'normal strain component due to surface geostrophic current anomaly'
+        ds['sn'].attrs['standard_name'] = 'surface_geostrophic_sn'
+        ds['sn'].attrs['units'] = '1/s'
+        ds['sn'].attrs['coverage_content_type'] = 'modelResult'
+        ds['sn'].attrs['valid_range'] = np.array([-1e9,  1e9])
+        ds['sn'].attrs['grid_mapping'] = 'crs'
+        ds['sn'].attrs['description'] = '-2*(g/f)*d2SLA/dxy'
+        
+        ds['ss'].attrs['long_name'] = 'shear strain component due to surface geostrophic current anomaly'
+        ds['ss'].attrs['standard_name'] = 'surface_geostrophic_ss'
+        ds['ss'].attrs['units'] = '1/s'
+        ds['ss'].attrs['coverage_content_type'] = 'modelResult'
+        ds['ss'].attrs['valid_range'] = np.array([-1e9,  1e9])
+        ds['ss'].attrs['grid_mapping'] = 'crs'
+        ds['ss'].attrs['description'] = '(g/f)*(d2SLA/dx2-d2SLA_dy2)'
+        
+        # mask out equator where f-plane doesn't hold
+        equator_mask = (ds['sla'].latitude >= -5) & (ds['sla'].latitude <= 5)
+        ds['ugosa'] = ds['ugosa'].where(~equator_mask)
+        ds['vgosa'] = ds['vgosa'].where(~equator_mask)
+        ds['ugos'] = ds['ugos'].where(~equator_mask)
+        ds['vgos'] = ds['vgos'].where(~equator_mask)
+        ds['zeta'] = ds['zeta'].where(~equator_mask)
+        ds['sn'] = ds['sn'].where(~equator_mask)
+        ds['ss'] = ds['ss'].where(~equator_mask)
     
     ds = ds.where(ds_mask['mask'] == 0, np.nan) # mask land points
     ds = ds.where(ds_dist['distance'] > mask_coast_dist, np.nan) # mask points close to coastlines
     
+    if mask_ice:
+        
+        ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date).replace('-','')))
+        ds_ice_mask = ds_ice_mask.rename({'lon':'longitude', 'lat':'latitude'})
+        ds_ice_mask['longitude'] = ds_ice_mask['longitude'] % 360
+        ds_ice_mask = ds_ice_mask.sortby('longitude')
+        interp = ds_ice_mask.isel(time=0).interp_like(ds.isel(time = 0))
+        ice_arr = np.array(interp['sea_ice_concentration'])
+        ice_arr[np.isnan(ice_arr)] = 0 # NaN -> no ice
+        interp['ice_conc'] = (['latitude','longitude'],ice_arr)
+        ds = ds.where(interp['ice_conc'] < 0.01) # mask out pixels with greater than 1% sea ice concentration
+    
     return ds
 
-def merge_maps_and_save(pred_dir, pred_file_pattern, pred_date, output_nc_dir, mask_filename, dist_filename, mdt_filename, network_name, available_regions, L=200e3, crop_pixels=4, dx=7.5e3, with_grads=False, mask_coast_dist=10, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=True):
+
+def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_dir, mask_filename, dist_filename, mdt_filename, network_name, coord_grid_path = 'input_data/coord_grids.npy', L=200e3, crop_pixels=4, dx=7.5e3, with_grads=False, mask_coast_dist=10, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=True, mask_ice=True, sst_zarr_path='input_data/mur_coarse_zarrs/'):
     
     # add doc string
     
     print(f'Mapping {pred_date}')
-    # load and re-format the land_mask netcdf
     ds_mask = xr.open_dataset(mask_filename)
-    # ds_mask = ds_mask.rename({'lon': 'longitude', 'lat': 'latitude'})
-    # ds_mask = ds_mask.assign_coords(longitude=(ds_mask.longitude % 360)).roll(longitude=(ds_mask.dims['longitude'] // 2), roll_coords=True)
-    
-    # load and re-format the coast distance netcdf
     ds_dist = xr.open_dataset(dist_filename)
-    # ds_dist = ds_dist.rename({'lon': 'longitude', 'lat': 'latitude'})
-    # ds_dist = ds_dist.assign_coords(longitude=(ds_dist.longitude % 360)).roll(longitude=(ds_dist.dims['longitude'] // 2), roll_coords=True)
-    
     ds_mdt = xr.open_dataset(mdt_filename).isel(time=0)
+
+    
+    pred_zarr = zarr.open(pred_path, mode = 'r')
+
+    t_idx = (pred_date - zarr_start_date).days
     
     if with_grads:
-        data = np.load(pred_dir+pred_file_pattern+str(pred_date)+'.npy')
+        data = pred_zarr[t_idx,].values
         deta_dx = numerical_derivative_conv(data,axis='x',order=1,N=9,method='SNR4',h=7.5e3)
         deta_dy = numerical_derivative_conv(data,axis='y',order=1,N=9,method='SNR4',h=7.5e3)
         d2eta_dx2 = numerical_derivative_conv(deta_dx,axis='x',order=1,N=9,method='SNR4',h=7.5e3)
         d2eta_dy2 = numerical_derivative_conv(deta_dy,axis='y',order=1,N=9,method='SNR4',h=7.5e3)
         d2eta_dxy = numerical_derivative_conv(deta_dx,axis='y',order=1,N=9,method='SNR4',h=7.5e3)
         
-        coords = np.load(pred_dir+'coord_grids.npy')
-        coords_new = np.zeros((np.size(available_regions),128,128,2))
-        for i, r in enumerate(available_regions):
-            coords_new[i,] = coords[r,]
-        coords = coords_new.copy()
+        coords = np.load(coord_grid_path)
+        if coords.shape[0] != data.shape[0]:
+            print("WARNING: coord and pred grid n_regions don't match, proceeding assuming the first regions are aligned but check this is true")
+            coords = coords[:data.shape[0],:,:,:]
+        
         data = np.stack((data,deta_dx,deta_dy,d2eta_dx2,d2eta_dy2,d2eta_dxy),axis=-1)
         data = np.concatenate((coords,data),axis=-1)
     else:
-        data = np.expand_dims(np.load(pred_dir+pred_file_pattern+str(pred_date)+'.npy'),axis=-1)
-        coords = np.load(pred_dir+'coord_grids.npy')
-        coords_new = np.zeros((np.size(available_regions),128,128,2))
-        for i, r in enumerate(available_regions):
-            coords_new[i,] = coords[r,]
-        coords = coords_new.copy()
+        data = np.expand_dims(pred_zarr[t_idx,],axis=-1)#np.expand_dims(np.load(pred_dir+pred_file_pattern+str(pred_date)+'.npy'),axis=-1)
+        coords = np.load(coord_grid_path)
+        if coords.shape[0] != data.shape[0]:
+            print("WARNING: coord and pred grid n_regions don't match, proceeding assuming the first regions are aligned but check this is true")
+            coords = coords[:data.shape[0],:,:,:]
         data = np.concatenate((coords,data),axis=-1)
         
         
-    if crop_pixels!=0:
+    if crop_pixels != 0:
         data = data[:,crop_pixels:-crop_pixels,crop_pixels:-crop_pixels,:]
         
     n = data.shape[1]
     kernel = create_kernel(L,n,dx)
     
-    if (with_grads==False):
+    if (with_grads == False):
         sla, lon, lat = merge_maps(data, kernel, lon_min, lon_max, lat_min, lat_max, res, progress)
         sla = np.reshape(sla,(sla.shape[0],sla.shape[1]))
         ds = map_to_xarray(sla, lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, mask_coast_dist=mask_coast_dist, network_name = network_name)
@@ -429,9 +520,9 @@ def merge_maps_and_save(pred_dir, pred_file_pattern, pred_date, output_nc_dir, m
         ds.to_netcdf(save_path)
     else:
         interps, lon, lat = merge_maps(data, kernel, lon_min, lon_max, lat_min, lat_max, res, progress)
-        ds = map_to_xarray(interps[:,:,0], lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, dsla_dx = interps[:,:,1], dsla_dy = interps[:,:,2], d2sla_dx2 = interps[:,:,3], d2sla_dy2 = interps[:,:,4], d2sla_dxy = interps[:,:,5], mask_coast_dist=mask_coast_dist, network_name = network_name)
+        ds = map_to_xarray(interps[:,:,0], lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, dsla_dx = interps[:,:,1], dsla_dy = interps[:,:,2], d2sla_dx2 = interps[:,:,3], d2sla_dy2 = interps[:,:,4], d2sla_dxy = interps[:,:,5], mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_zarr_path = sst_zarr_path)
         date_today = datetime.date.today()
-        save_path = output_nc_dir + network_name + f'_L{int(L/1e3)}km' + '_mappedSLA_' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc'
+        save_path = output_nc_dir + network_name + f'_L{int(L/1e3)}km' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc'
         remove_file(save_path)
         ds.to_netcdf(save_path)
         

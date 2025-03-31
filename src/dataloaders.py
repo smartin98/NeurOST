@@ -181,13 +181,12 @@ class NeurOST_dataset(Dataset):
 
             
             
-# Worker initialization function
+# Worker initialization function: each worker loads (lazily) its own copy of the SSH and SST datasets.
 def worker_init_fn(worker_id, dataset):
-    worker_seed = 42  # Set to your desired starting seed
+    worker_seed = 42 
     seed = worker_seed + worker_id
     np.random.seed(seed)
     torch.manual_seed(seed) 
-     # Set the worker-specific file and dataset access
     sla_hdf5 = h5py.File(dataset.sla_hdf5_path, 'r')
     
     ds_sst = xr.open_mfdataset(dataset.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
