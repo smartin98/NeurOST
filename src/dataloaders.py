@@ -31,8 +31,7 @@ class NeurOST_dataset(Dataset):
                  time_bin_size = 10, 
                  lon_bin_size = 10, 
                  lat_bin_size = 10, 
-                 ssh_out_n_max = 1000, 
-                 multiprocessing=False
+                 ssh_out_n_max = 1000,
                 ):
         self.sst_zarr = sst_zarr
         self.start_date = start_date
@@ -47,7 +46,7 @@ class NeurOST_dataset(Dataset):
         self.L_x = L_x
         self.L_y = L_y
         files = sorted(os.listdir(self.sst_zarr))
-        self.zarr_paths = [self.sst_zarr + f for f in files]
+        self.zarr_paths = [os.path.join(self.sst_zarr, f) for f in files]
         self.force_recache = force_recache
         self.leave_out_altimeters = leave_out_altimeters
         self.withhold_sat = withhold_sat
@@ -57,7 +56,6 @@ class NeurOST_dataset(Dataset):
         self.lon_bin_size = lon_bin_size
         self.lat_bin_size = lat_bin_size
         self.ssh_out_n_max = ssh_out_n_max
-        self.multiprocessing=False
         
                 
         self.ds_sst = xr.open_mfdataset(self.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
@@ -85,11 +83,8 @@ class NeurOST_dataset(Dataset):
         else:
             self.sla_t_offset = sla_t_offset
         
-        # self.sla_hdf5_path = 'input_data/sla_cache' + '_' + str(self.start_date) + '_' + str(self.end_date) + '.h5'
-        if not multiprocessing:
-            self.hdf5 = h5py.File(self.sla_hdf5_path, 'r')
-        else:
-            self.hdf5 = None
+
+        self.hdf5 = h5py.File(self.sla_hdf5_path, 'r')
         
         if sla_t_offset is None:
             self.time_bins = np.arange(0,self.ds_sst['time'].shape[0], self.time_bin_size)
@@ -107,9 +102,6 @@ class NeurOST_dataset(Dataset):
         {"proj":'latlong', "ellps":'WGS84', "datum":'WGS84'},
         {"proj":'geocent', "ellps":'WGS84', "datum":'WGS84'},
         )
-        
-        if multiprocessing:
-            self.ds_sst = None
         
         
     def __len__(self):
@@ -168,9 +160,9 @@ class NeurOST_dataset(Dataset):
         
         if self.use_sst:
             if ssh_out is not None:
-                return torch.from_numpy(np.stack((sst, ssh_in), axis = 1).astype(np.float32)), torch.from_numpy(ssh_out_final.astype(np.float32))
+                return torch.from_numpy(np.stack((ssh_in, sst), axis = 1).astype(np.float32)), torch.from_numpy(ssh_out_final.astype(np.float32))
             else:
-                return torch.from_numpy(np.stack((sst, ssh_in), axis = 1).astype(np.float32)), torch.from_numpy(np.zeros((self.N_t,self.ssh_out_n_max,3),dtype=np.float32))
+                return torch.from_numpy(np.stack((ssh_in, sst), axis = 1).astype(np.float32)), torch.from_numpy(np.zeros((self.N_t,self.ssh_out_n_max,3),dtype=np.float32))
         else:
             if ssh_out is not None:
                 return torch.from_numpy(np.expand_dims(ssh_in, axis = 1).astype(np.float32)), torch.from_numpy(ssh_out_final.astype(np.float32))

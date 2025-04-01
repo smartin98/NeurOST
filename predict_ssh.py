@@ -9,7 +9,7 @@ import datetime
 import zarr
 import argparse
 import signal
-import tqdm
+from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 
@@ -20,7 +20,7 @@ parser.add_argument('--experiment_name', type = str, default = 'NeurOST_SSH-SST'
 parser.add_argument("--withheld_sats", nargs = "+", type = str, help = "List all satellites to withhold from input using the standard short names from CMEMS (e.g. s3a, al, swon, etc.)")
 parser.add_argument('--no_sst', action = "store_true", help = "Use only SSH in input")
 parser.add_argument('--coord_grid_path', type = str, default = "input_data/coord_grids.npy", help = "Path to npy file containing coordinates of local patches for reconstruction")
-parser.add_argument('--model_weights_path', type = str, default = "input_data/model_weights/simvp_ssh_sst_ns1000000global_weights_epoch48", help = "Path to saved torch model weights (not necessary if just doing inference with the pre-trained model)")
+parser.add_argument('--model_weights_path', type = str, default = "input_data/model_weights/simvp_ssh_sst_ns1000000global_weights_epoch46", help = "Path to saved torch model weights (not necessary if just doing inference with the pre-trained model)")
 parser.add_argument('--mean_ssh', type = float, default = 0.074, help = "Global mean SSH for normalisation")
 parser.add_argument('--std_ssh', type = float, default = 0.0986, help = "Global std SSH for normalisation")
 parser.add_argument('--mean_sst', type = float, default = 293.307, help = "Global mean SST for normalisation")
@@ -55,10 +55,12 @@ if args.n_cpu_workers <=1:
 else:
     multiprocessing = True
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print('Using device: ')
+print(device)
 
-start_date = datetime.date(int(args.start[:4]), int(args.start[4:6]), int(args.start[6:]))
-end_date = datetime.date(int(args.end[:4]), int(args.end[4:6]), int(args.end[6:]))
+start_date = datetime.date(int(args.start.replace('-','')[:4]), int(args.start.replace('-','')[4:6]), int(args.start.replace('-','')[6:]))
+end_date = datetime.date(int(args.end.replace('-','')[:4]), int(args.end.replace('-','')[4:6]), int(args.end.replace('-','')[6:]))
 coord_grids = np.load(args.coord_grid_path)
 
 
@@ -82,9 +84,31 @@ dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
                           time_bin_size = args.time_bin_size,
                           lon_bin_size = args.lon_bin_size,
                           lat_bin_size = args.lat_bin_size,
-                          ssh_out_max_size = 1000,
-                          multiprocessing = multiprocessing,
+                          ssh_out_n_max = 1000,
                          )
+
+
+# Worker initialization function: each worker loads (lazily) its own copy of the SSH and SST datasets.
+def worker_init_fn(worker_id, dataset):
+    print('initializing ' + str(worker_id))
+    worker_seed = 42 
+    seed = worker_seed + worker_id
+    np.random.seed(seed)
+    torch.manual_seed(seed) 
+    sla_hdf5 = h5py.File(dataset.sla_hdf5_path, 'r')
+    
+    ds_sst = xr.open_mfdataset(dataset.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
+    if np.min(ds_sst['time']) > np.datetime64(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)),'ns'):
+        raise ValueError("MUR SST zarr file missing dates at beginning of desired time range")
+    if np.max(ds_sst['time']) < np.datetime64(str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2)),'ns'):
+        raise ValueError("MUR SST zarr file missing dates at end of desired time range")
+
+    ds_sst = ds_sst.sel(time=slice(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)), str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2))))
+    
+    # Make the data available for the worker to access
+    torch.utils.data.get_worker_info().dataset.hdf5 = sla_hdf5
+    torch.utils.data.get_worker_info().dataset.ds_sst = ds_sst
+
 
 if args.no_sst:
     model = SimVP_Model_no_skip(in_shape=(args.n_t,1,args.n,args.n),model_type='gsta',hid_S=8,hid_T=128,drop=0.2,drop_path=0.15).to(device)
@@ -105,13 +129,20 @@ model.eval()
 
 pred_zarr_path = os.path.join(args.output_zarr_dir, args.experiment_name + '_unmerged_preds_' + str(start_date).replace('-','') + '_' + str(end_date).replace('-','') + '.zarr')
 
-dataloader = DataLoader(dataset, 
-                        batch_size = args.batch_size, 
-                        shuffle = False, 
-                        num_workers = args.n_cpu_workers, 
-                        worker_init_fn = lambda worker_id: worker_init_fn(worker_id, dataset), # worker_init_fn defined in src.dataloaders.py
-                        persistent_workers = True
-                       )
+if multiprocessing:
+    dataloader = DataLoader(dataset, 
+                            batch_size = args.batch_size, 
+                            shuffle = False, 
+                            num_workers = args.n_cpu_workers, 
+                            worker_init_fn = lambda worker_id: worker_init_fn(worker_id, dataset), # worker_init_fn defined in src.dataloaders.py
+                            persistent_workers = True
+                           )
+else:
+    dataloader = DataLoader(dataset, 
+                            batch_size = args.batch_size, 
+                            shuffle = False,
+                           )
+    
 
 
 #########
@@ -144,14 +175,14 @@ if os.path.exists(pred_zarr_path):
 ##########
 
 # initialise zarr store to store unmerged patch predictions
-pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
+pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days + 1, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
 
-data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=args.n_cpus)
+data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.n_cpu_workers)
 
 current_idx = 0
 
-r_idxs = coord_grids.shape[0]
-t_idxs = np.arange((end_date - start_date).days)
+r_idxs = np.arange(coord_grids.shape[0])
+t_idxs = np.arange((end_date - start_date).days + 1)
 
 t_idxs, r_idxs = np.meshgrid(t_idxs, r_idxs)
 
@@ -168,15 +199,19 @@ with torch.no_grad():
         preds = model(input_data)
         preds = preds.cpu().numpy()[:, int(args.n_t / 2), 0, :, :]
         preds = preds * args.std_ssh + args.mean_ssh
-        
-        # save slice if batch all within one region (faster writing)
-        if r_indexer[0] == r_indexer[-1]:
-            pred_store[t_indexer[0]:t_indexer[-1]+1,r_indexer[0]] = preds
+
+        if pred_store.shape[0] > args.batch_size:
+            # save slice if batch all within one region (faster writing)
+            if r_indexer[0] == r_indexer[-1]:
+                pred_store[t_indexer[0]:t_indexer[-1]+1,r_indexer[0]] = preds
+            else:
+                # resort to saving each batch item individually if not all within one region
+                for i in range(t_indexer.shape[0]):
+                    pred_store[int(t_indexer[i]),int(r_indexer[i])] = preds[i,]
         else:
             # resort to saving each batch item individually if not all within one region
             for i in range(t_indexer.shape[0]):
                 pred_store[int(t_indexer[i]),int(r_indexer[i])] = preds[i,]
-                
         current_idx += len(input_data)
         
 print('Inference complete! Un-merged patch predictions saved at: ' + pred_zarr_path + ', run map_merging script to create final gridded product.')

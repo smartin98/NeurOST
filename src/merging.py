@@ -481,7 +481,7 @@ def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_di
     t_idx = (pred_date - zarr_start_date).days
     
     if with_grads:
-        data = pred_zarr[t_idx,].values
+        data = pred_zarr[t_idx,]
         deta_dx = numerical_derivative_conv(data,axis='x',order=1,N=9,method='SNR4',h=7.5e3)
         deta_dy = numerical_derivative_conv(data,axis='y',order=1,N=9,method='SNR4',h=7.5e3)
         d2eta_dx2 = numerical_derivative_conv(deta_dx,axis='x',order=1,N=9,method='SNR4',h=7.5e3)

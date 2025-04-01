@@ -220,8 +220,6 @@ def convert_np_cache_to_hdf5(np_dir = 'input_data/sla_cache_2024-03-01_2024-04-0
 def find_covering_cache(start_date, end_date, chunk_dir):
     cache_files = [f for f in os.listdir(chunk_dir) if f.endswith('.h5')]
     
-    print(cache_files)
-    
     best_match = None
     min_days_offset = None
     final_t_length = None
@@ -233,7 +231,6 @@ def find_covering_cache(start_date, end_date, chunk_dir):
             cache_end = datetime.datetime.strptime(match.group(2), "%Y-%m-%d").date()
             
             if cache_start <= start_date and cache_end >= end_date:
-                print('triggered')
                 days_offset = (start_date - cache_start).days
                 days_length = (cache_end - cache_start).days
                 
