@@ -302,21 +302,6 @@ def create_sla_chunks(start_date, end_date, chunk_dir = 'input_data/sla_cache', 
     convert_np_cache_to_hdf5(np_dir = output_dir, hdf5_path = output_dir+'.h5',delete_np=True)
     
     return output_dir + '.h5', None, None
-        
-
-        
-def get_query_bins(query_time_start, query_time_end, query_lat_min, query_lat_max, query_lon_min, query_lon_max, time_bins, lat_bins, lon_bins):
-    # Compute full bin edges (intervals)
-    time_bin_edges = np.append(time_bins, np.inf)  # Ensure upper edge coverage
-    lat_bin_edges = np.append(lat_bins, np.inf)
-    lon_bin_edges = np.append(lon_bins, np.inf)
-
-    # Find bins that overlap the query bounds
-    q_time_idx = np.where((time_bin_edges[:-1] <= query_time_end) & (time_bin_edges[1:] > query_time_start))[0]
-    q_lat_idx = np.where((lat_bin_edges[:-1] <= query_lat_max) & (lat_bin_edges[1:] > query_lat_min))[0]
-    q_lon_idx = np.where((lon_bin_edges[:-1] <= query_lon_max) & (lon_bin_edges[1:] > query_lon_min))[0]
-
-    return q_time_idx, q_lat_idx, q_lon_idx
 
 
 def load_query_data_h5(query_time_start, query_time_end, query_lat_min, query_lat_max, 
@@ -362,18 +347,44 @@ def extract_tracks_h5(t_mid, lon0, lat0, coord_grid, transformer_ll2xyz, time_bi
     lon_min = np.min(lon_grid[:,0]) - 0.1 #handles wrap around dateline
 
     
-    
-    data, sat = load_query_data_h5(query_time_start = t_mid - n_t//2,
-                                 query_time_end = t_mid + n_t//2,
-                                 query_lat_min = lat_min,
-                                 query_lat_max = lat_max,
-                                 query_lon_min = lon_min,
-                                 query_lon_max = lon_max,
-                                 time_bins = time_bins,
-                                 lat_bins = lat_bins,
-                                 lon_bins = lon_bins,
-                                 h5f = h5f
-                                )
+    if lon_min < lon_max:
+        data, sat = load_query_data_h5(query_time_start = t_mid - n_t//2,
+                                     query_time_end = t_mid + n_t//2,
+                                     query_lat_min = lat_min,
+                                     query_lat_max = lat_max,
+                                     query_lon_min = lon_min,
+                                     query_lon_max = lon_max,
+                                     time_bins = time_bins,
+                                     lat_bins = lat_bins,
+                                     lon_bins = lon_bins,
+                                     h5f = h5f
+                                    )
+    else: # wrap over dateline
+        data_l, sat_l = load_query_data_h5(query_time_start = t_mid - n_t//2,
+                                     query_time_end = t_mid + n_t//2,
+                                     query_lat_min = lat_min,
+                                     query_lat_max = lat_max,
+                                     query_lon_min = lon_min,
+                                     query_lon_max = 180,
+                                     time_bins = time_bins,
+                                     lat_bins = lat_bins,
+                                     lon_bins = lon_bins,
+                                     h5f = h5f
+                                    )
+        data_r, sat_r = load_query_data_h5(query_time_start = t_mid - n_t//2,
+                                     query_time_end = t_mid + n_t//2,
+                                     query_lat_min = lat_min,
+                                     query_lat_max = lat_max,
+                                     query_lon_min = -180,
+                                     query_lon_max = lon_max,
+                                     time_bins = time_bins,
+                                     lat_bins = lat_bins,
+                                     lon_bins = lon_bins,
+                                     h5f = h5f
+                                    )
+
+        data, sat = np.concatenate((data_l, data_r)), np.concatenate((sat_l, sat_r))
+        
     
     if np.size(data)>0:
         latitude = data[:,0]

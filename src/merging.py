@@ -7,6 +7,9 @@ import datetime
 from scipy.spatial import cKDTree
 from scipy.signal import convolve
 import zarr
+import sys
+sys.path.append('src')
+from src.helpers import *
 
 # check if file exists and delete if it does
 def remove_file(file_path):
@@ -350,7 +353,7 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
             
-        ds_mdt = ds_mdt.interp_like(da, method = 'linear')
+        # ds_mdt = ds_mdt.interp_like(da, method = 'linear')
         da_mdt = ds_mdt['mdt']
         da_adt = da_mdt + da
         da_adt.attrs['long_name'] = 'Absolute Dynamic Topography'
@@ -362,10 +365,6 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         da_adt.attrs['grid_mapping'] = 'crs'
         
         ds = xr.Dataset({'sla':da, 'adt':da_adt, 'dSLA_dx':da_dx, 'dSLA_dy':da_dy, 'd2SLA_dx2':da_dx2, 'd2SLA_dy2':da_dy2, 'd2SLA_dxy':da_dxy}) 
-        ds['longitude'] = np.mod(ds['longitude'],360) # convert to 0-360 for easier comparison to other maps
-        ds = ds.sortby('longitude')
-        ds['latitude'] = ds['latitude'].assign_attrs({'units':'degrees_north','_CoordinateAxisType':'Lat'})
-        ds['longitude'] = ds['longitude'].assign_attrs({'units':'degrees_east','_CoordinateAxisType':'Lon'})
         
         g = 9.81
         om = 2 * np.pi / 86164
@@ -437,6 +436,11 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         ds['ss'].attrs['valid_range'] = np.array([-1e9,  1e9])
         ds['ss'].attrs['grid_mapping'] = 'crs'
         ds['ss'].attrs['description'] = '(g/f)*(d2SLA/dx2-d2SLA_dy2)'
+
+        ds['longitude'] = np.mod(ds['longitude'],360) # convert to 0-360 for easier comparison to other maps
+        ds = ds.sortby('longitude')
+        ds['latitude'] = ds['latitude'].assign_attrs({'units':'degrees_north','_CoordinateAxisType':'Lat'})
+        ds['longitude'] = ds['longitude'].assign_attrs({'units':'degrees_east','_CoordinateAxisType':'Lon'})
         
         # mask out equator where f-plane doesn't hold
         equator_mask = (ds['sla'].latitude >= -5) & (ds['sla'].latitude <= 5)
@@ -453,12 +457,12 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
     
     if mask_ice:
         
-        ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date).replace('-','')))
+        ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date).replace('-','') + '.zarr'))
         ds_ice_mask = ds_ice_mask.rename({'lon':'longitude', 'lat':'latitude'})
         ds_ice_mask['longitude'] = ds_ice_mask['longitude'] % 360
         ds_ice_mask = ds_ice_mask.sortby('longitude')
         interp = ds_ice_mask.isel(time=0).interp_like(ds.isel(time = 0))
-        ice_arr = np.array(interp['sea_ice_concentration'])
+        ice_arr = np.array(interp['sea_ice_fraction'])
         ice_arr[np.isnan(ice_arr)] = 0 # NaN -> no ice
         interp['ice_conc'] = (['latitude','longitude'],ice_arr)
         ds = ds.where(interp['ice_conc'] < 0.01) # mask out pixels with greater than 1% sea ice concentration
@@ -466,14 +470,19 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
     return ds
 
 
-def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_dir, mask_filename, dist_filename, mdt_filename, network_name, coord_grid_path = 'input_data/coord_grids.npy', L=200e3, crop_pixels=4, dx=7.5e3, with_grads=False, mask_coast_dist=10, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=True, mask_ice=True, sst_zarr_path='input_data/mur_coarse_zarrs/'):
+def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_dir, mask_filename, dist_filename, mdt_filename, network_name, coord_grid_path = 'input_data/coord_grids.npy', L=200e3, crop_pixels=4, dx=7.5e3, with_grads=False, mask_coast_dist=10, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=True, mask_ice=True, sst_zarr_path='input_data/mur_coarse_zarrs/', experiment_name = 'NeurOST_SSH-SST'):
     
     # add doc string
     
     print(f'Mapping {pred_date}')
     ds_mask = xr.open_dataset(mask_filename)
     ds_dist = xr.open_dataset(dist_filename)
-    ds_mdt = xr.open_dataset(mdt_filename).isel(time=0)
+    ds_mdt = xr.open_dataset(mdt_filename).isel(time=0, drop = True)[['mdt','u','v']]
+    ds_mdt = add_ghost_points(ds_mdt, lon_bounds = [-180,180])
+    
+    x_lin = np.arange(lon_min, lon_max, res)
+    y_lin = np.arange(lat_min, lat_max, res)
+    ds_mdt = ds_mdt.interp({'longitude': x_lin, 'latitude': y_lin})
 
     
     pred_zarr = zarr.open(pred_path, mode = 'r')
@@ -481,7 +490,7 @@ def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_di
     t_idx = (pred_date - zarr_start_date).days
     
     if with_grads:
-        data = pred_zarr[t_idx,]
+        data = np.array(pred_zarr[t_idx,])
         deta_dx = numerical_derivative_conv(data,axis='x',order=1,N=9,method='SNR4',h=7.5e3)
         deta_dy = numerical_derivative_conv(data,axis='y',order=1,N=9,method='SNR4',h=7.5e3)
         d2eta_dx2 = numerical_derivative_conv(deta_dx,axis='x',order=1,N=9,method='SNR4',h=7.5e3)
@@ -513,16 +522,16 @@ def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_di
     if (with_grads == False):
         sla, lon, lat = merge_maps(data, kernel, lon_min, lon_max, lat_min, lat_max, res, progress)
         sla = np.reshape(sla,(sla.shape[0],sla.shape[1]))
-        ds = map_to_xarray(sla, lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, mask_coast_dist=mask_coast_dist, network_name = network_name)
+        ds = map_to_xarray(sla, lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_zarr_dir = sst_zarr_path)
         date_today = datetime.date.today()
-        save_path = output_nc_dir + network_name + f'_L{int(L/1e3)}km' + '_mappedSLA_' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc'
+        save_path = os.path.join(output_nc_dir, experiment_name + f'_L{int(L/1e3)}km_' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc')
         remove_file(save_path)
         ds.to_netcdf(save_path)
     else:
         interps, lon, lat = merge_maps(data, kernel, lon_min, lon_max, lat_min, lat_max, res, progress)
-        ds = map_to_xarray(interps[:,:,0], lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, dsla_dx = interps[:,:,1], dsla_dy = interps[:,:,2], d2sla_dx2 = interps[:,:,3], d2sla_dy2 = interps[:,:,4], d2sla_dxy = interps[:,:,5], mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_zarr_path = sst_zarr_path)
+        ds = map_to_xarray(interps[:,:,0], lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, dsla_dx = interps[:,:,1], dsla_dy = interps[:,:,2], d2sla_dx2 = interps[:,:,3], d2sla_dy2 = interps[:,:,4], d2sla_dxy = interps[:,:,5], mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_zarr_dir = sst_zarr_path)
         date_today = datetime.date.today()
-        save_path = output_nc_dir + network_name + f'_L{int(L/1e3)}km' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc'
+        save_path = os.path.join(output_nc_dir, experiment_name + f'_L{int(L/1e3)}km_' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc')
         remove_file(save_path)
         ds.to_netcdf(save_path)
         
