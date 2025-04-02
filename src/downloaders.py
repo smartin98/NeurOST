@@ -36,6 +36,17 @@ date_end_input = sys.argv[2]
 date_start = datetime.strptime(date_start_input, "%Y-%m-%d").date()
 date_end = datetime.strptime(date_end_input, "%Y-%m-%d").date()
 
+cmems_dt_to_nrt = date(2024,6,14) # CMEMS releases re-processed SLA in delayed time periodically, update this to ensure you're using delayed time wherever possible.
+
+if date_start < cmems_dt_to_nrt:
+    if date_end < cmems_dt_to_nrt:
+        mode = 'delayed'
+    else:
+        mode = 'mixed'
+else:
+    mode = 'nrt'
+    
+
 
 start_date_string = format_date_to_string(date_start)
 end_date_string = format_date_to_string(date_end)
@@ -70,31 +81,71 @@ for t in range(n_days + 1):
 #############################################
 
 
-sats = ['al','c2n','h2b','j3n','s3a','s3b','s6a-hr','swon']
+sats_nrt = ['al','c2n','h2b','j3n','s3a','s3b','s6a-hr','swon']
+sats_delayed = ['c2', 'c2n', 'en','enn','e1','e1g','e2','g2','h2a','h2ag','h2b','j1','j1g','j1n','j2','j2n','j2g','j3','j3n','al','alg','s3a','s3b','s6a-lr','swon','swonc','tp','tpn']
 
 
 def generate_date_list(start_date, end_date):
     date_list = ['*/'+(start_date + timedelta(days=i)).strftime('%Y/%m') +'/*.nc' for i in range((end_date - start_date).days + 1)]
     return list(set(date_list))
 
-date_start_input = sys.argv[1]
-date_end_input = sys.argv[2]
+if mode == 'nrt':
 
-# def download_mur_local(date_start_input,date_end_input):
-date_start = datetime.strptime(date_start_input, "%Y-%m-%d").date()
-date_end = datetime.strptime(date_end_input, "%Y-%m-%d").date()
+    search_strings = generate_date_list(date_start, date_end)
 
+    for sat in sats_nrt:
+        print('Downloading data for '+sat)
+        for search in search_strings:
+            print(search)
+            cm.get(
+                dataset_id = "cmems_obs-sl_glo_phy-ssh_nrt_"+sat+"-l3-duacs_PT1S",
+                filter = search,
+                output_directory = 'input_data/cmems_sla/'+sat+'/',
+                no_directories = True,
+                force_download = True
+            )
+elif mode == 'delayed':
+    search_strings = generate_date_list(date_start, date_end)
 
-search_strings = generate_date_list(date_start, date_end)
+    for sat in sats_delayed:
+        print('Downloading data for '+sat)
+        for search in search_strings:
+            print(search)
+            cm.get(
+                dataset_id = "cmems_obs-sl_glo_phy-ssh_my_"+sat+"-l3-duacs_PT1S",
+                filter = search,
+                output_directory = 'input_data/cmems_sla/'+sat+'/',
+                no_directories = True,
+                force_download = True
+            )
+            
+elif mode == 'mixed':
+    print('Downloading Delayed Mode Dates:')
+    search_strings = generate_date_list(date_start, cmems_dt_to_nrt)
 
-for sat in sats:
-    print('Downloading data for '+sat)
-    for search in search_strings:
-        print(search)
-        cm.get(
-            dataset_id = "cmems_obs-sl_glo_phy-ssh_nrt_"+sat+"-l3-duacs_PT1S",
-            filter = search,
-            output_directory = 'input_data/cmems_sla/'+sat+'/',
-            no_directories = True,
-            force_download = True
-        )
+    for sat in sats_delayed:
+        print('Downloading data for '+sat)
+        for search in search_strings:
+            print(search)
+            cm.get(
+                dataset_id = "cmems_obs-sl_glo_phy-ssh_my_"+sat+"-l3-duacs_PT1S",
+                filter = search,
+                output_directory = 'input_data/cmems_sla/'+sat+'/',
+                no_directories = True,
+                force_download = True
+            )
+            
+    print('Downloading NRT Mode Dates:')
+    search_strings = generate_date_list(cmems_dt_to_nrt, date_end)
+
+    for sat in sats_nrt:
+        print('Downloading data for '+sat)
+        for search in search_strings:
+            print(search)
+            cm.get(
+                dataset_id = "cmems_obs-sl_glo_phy-ssh_nrt_"+sat+"-l3-duacs_PT1S",
+                filter = search,
+                output_directory = 'input_data/cmems_sla/'+sat+'/',
+                no_directories = True,
+                force_download = True
+            )
