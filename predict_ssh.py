@@ -37,6 +37,7 @@ parser.add_argument('--lat_bin_size', type = float, default = 10, help = "Latitu
 parser.add_argument('--output_zarr_dir', type = str, default = 'predictions/unmerged_zarrs/', help = "Path to directory within which unmerged predictions will be stored in zarr store.")
 parser.add_argument('--n_cpu_workers', type = int, default = 1, help = "Number of CPU workers used by dataloader to parallelize data loading (strongly recommend setting as high as your resources allow to ensure GPU saturation)")
 parser.add_argument('--batch_size', type = int, default = 32, help = "Number of examples per batch, adjust based on your GPU memory.")
+parser.add_argument('--prefetch_factor', type = int, default = 2, help = "Dataloader prefetch factor.")
 
 args = parser.parse_args()
 
@@ -135,7 +136,8 @@ if multiprocessing:
                             shuffle = False, 
                             num_workers = args.n_cpu_workers, 
                             worker_init_fn = lambda worker_id: worker_init_fn(worker_id, dataset), # worker_init_fn defined in src.dataloaders.py
-                            persistent_workers = True
+                            persistent_workers = True,
+                            prefetch_factor = args.prefetch_factor
                            )
 else:
     dataloader = DataLoader(dataset, 
