@@ -1,0 +1,25 @@
+name: neurost
+channels:
+  - conda-forge
+  - nvidia
+  - pytorch
+  - repo/main
+  - defaults
+dependencies:
+  - python=3.9
+  - pytorch-cuda=12.1
+  - pytorch==2.3.0
+  - torchaudio==2.3.0
+  - torchvision==0.18.0
+  - h5py
+  - pyinterp
+  - xarray
+  - zarr
+  - pyproj
+  - tqdm
+  - conda-forge::copernicusmarine
+  - matplotlib
+  - scipy
+  - pip
+  - pip:
+      - podaac-data-subscriber
