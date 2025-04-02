@@ -90,7 +90,7 @@ dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
 
 # Worker initialization function: each worker loads (lazily) its own copy of the SSH and SST datasets.
 def worker_init_fn(worker_id, dataset):
-    print('initializing ' + str(worker_id))
+
     worker_seed = 42 
     seed = worker_seed + worker_id
     np.random.seed(seed)

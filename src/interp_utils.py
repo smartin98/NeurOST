@@ -383,7 +383,19 @@ def extract_tracks_h5(t_mid, lon0, lat0, coord_grid, transformer_ll2xyz, time_bi
                                      h5f = h5f
                                     )
 
-        data, sat = np.concatenate((data_l, data_r)), np.concatenate((sat_l, sat_r))
+        # handle case where one side of dateline is empty
+        if (len(data_l.shape) == 2) and  (len(data_r.shape) == 2):
+            data, sat = np.concatenate((data_l, data_r)), np.concatenate((sat_l, sat_r))
+        else:
+            if (len(data_l.shape) == 1) and (len(data_r.shape) == 2):
+                data, sat = data_r, sat_r
+            elif (len(data_r.shape) == 1) and (len(data_l.shape) == 2):
+                data, sat = data_l, sat_l
+            else:
+                data, sat = np.empty((0,)), np.empty((0,))
+            
+                
+            
         
     
     if np.size(data)>0:
