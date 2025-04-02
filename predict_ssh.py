@@ -1,8 +1,6 @@
 import numpy as np
 import torch
 import os
-import sys
-sys.path.append('src')
 from src.simvp_model import *
 from src.dataloaders import *
 import datetime
