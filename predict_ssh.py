@@ -20,7 +20,7 @@ parser.add_argument('--experiment_name', type = str, default = 'NeurOST_SSH-SST'
 parser.add_argument("--withheld_sats", nargs = "+", type = str, help = "List all satellites to withhold from input using the standard short names from CMEMS (e.g. s3a, al, swon, etc.)")
 parser.add_argument('--no_sst', action = "store_true", help = "Use only SSH in input")
 parser.add_argument('--coord_grid_path', type = str, default = "input_data/coord_grids.npy", help = "Path to npy file containing coordinates of local patches for reconstruction")
-parser.add_argument('--model_weights_path', type = str, default = "input_data/model_weights/simvp_ssh_sst_ns1000000global_weights_epoch46", help = "Path to saved torch model weights (not necessary if just doing inference with the pre-trained model)")
+parser.add_argument('--model_weights_path', type = str, help = "Path to saved torch model weights (not necessary if just doing inference with the pre-trained model)")
 parser.add_argument('--mean_ssh', type = float, default = 0.074, help = "Global mean SSH for normalisation")
 parser.add_argument('--std_ssh', type = float, default = 0.0986, help = "Global std SSH for normalisation")
 parser.add_argument('--mean_sst', type = float, default = 293.307, help = "Global mean SST for normalisation")
@@ -116,7 +116,15 @@ if args.no_sst:
 else:
     model = SimVP_Model_no_skip_sst(in_shape=(args.n_t,2,args.n,args.n),model_type='gsta',hid_S=8,hid_T=128,drop=0.2,drop_path=0.15).to(device)
 
-state_dict = torch.load(args.model_weights_path)['model_state_dict']
+if args.model_weights_path is None:
+    if args.no_sst:
+        model_weights_path = "input_data/simvp_ssh_ns1000000_global_weights_epoch45"
+    else:
+        model_weights_path = "input_data/model_weights/simvp_ssh_sst_ns1000000global_weights_epoch46"
+else:
+    model_weights_path = args.model_weights_path
+    
+state_dict = torch.load(model_weights_path)['model_state_dict']
 
 if "module." in list(state_dict.keys())[0]:
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}

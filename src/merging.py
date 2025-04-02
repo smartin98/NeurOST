@@ -292,7 +292,7 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
     time = pd.date_range(str(date),periods=1)
     
     if with_grads==False:
-        da = xr.DataArray(data=np.expand_dims(np.swapaxes(sla,0,1),-1),
+        da = xr.DataArray(data=np.expand_dims(np.swapaxes(sla.astype('float32'),0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
         da.attrs['long_name'] = 'Sea Level Anomaly'
@@ -304,7 +304,7 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         da.attrs['grid_mapping'] = 'crs'
         
         ds_mdt = ds_mdt.interp_like(da, method = 'linear')
-        da_mdt = ds_mdt['mdt']
+        da_mdt = ds_mdt['mdt'].astype('float32')
         da_adt = da_mdt + da
         da_adt.attrs['long_name'] = 'Absolute Dynamic Topography'
         da_adt.attrs['units'] = 'm'
@@ -321,7 +321,7 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         ds['longitude'] = ds['longitude'].assign_attrs({'units':'degrees_east','_CoordinateAxisType':'Lon'})
     
     else:        
-        da = xr.DataArray(data=np.expand_dims(np.swapaxes(sla,0,1),-1),
+        da = xr.DataArray(data=np.expand_dims(np.swapaxes(sla.astype('float32'),0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
         da.attrs['long_name'] = 'Sea Level Anomaly'
@@ -332,29 +332,29 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         da.attrs['valid_range'] = np.array([-1e9,1e9])
         da.attrs['grid_mapping'] = 'crs'
 
-        da_dx = xr.DataArray(data=np.expand_dims(np.swapaxes(dsla_dx,0,1),-1),
+        da_dx = xr.DataArray(data=np.expand_dims(np.swapaxes(dsla_dx.astype('float32'),0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
         
         
-        da_dy = xr.DataArray(data=np.expand_dims(np.swapaxes(dsla_dy,0,1),-1),
+        da_dy = xr.DataArray(data=np.expand_dims(np.swapaxes(dsla_dy.astype('float32'),0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
         
-        da_dx2 = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dx2,0,1),-1),
+        da_dx2 = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dx2.astype('float32'),0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
         
-        da_dy2 = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dy2,0,1),-1),
+        da_dy2 = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dy2.astype('float32'),0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
         
-        da_dxy = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dxy,0,1),-1),
+        da_dxy = xr.DataArray(data=np.expand_dims(np.swapaxes(d2sla_dxy.astype('float32'),0,1),-1),
                            dims=["latitude", "longitude", "time"],
                            coords=dict(longitude=("longitude", lon_da), latitude=("latitude", lat_da), time=("time", time)))
             
         # ds_mdt = ds_mdt.interp_like(da, method = 'linear')
-        da_mdt = ds_mdt['mdt']
+        da_mdt = ds_mdt['mdt'].astype('float32')
         da_adt = da_mdt + da
         da_adt.attrs['long_name'] = 'Absolute Dynamic Topography'
         da_adt.attrs['units'] = 'm'
