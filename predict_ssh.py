@@ -38,6 +38,8 @@ parser.add_argument('--output_zarr_dir', type = str, default = 'predictions/unme
 parser.add_argument('--n_cpu_workers', type = int, default = 1, help = "Number of CPU workers used by dataloader to parallelize data loading (strongly recommend setting as high as your resources allow to ensure GPU saturation)")
 parser.add_argument('--batch_size', type = int, default = 32, help = "Number of examples per batch, adjust based on your GPU memory.")
 parser.add_argument('--prefetch_factor', type = int, default = 2, help = "Dataloader prefetch factor.")
+parser.add_argument('--overwrite_zarr', action = "store_true", help = "over-write the prediction zarr store if an existing store has the same name.")
+
 
 args = parser.parse_args()
 
@@ -146,17 +148,18 @@ def get_new_filepath(filepath):
     return f"{base}{i}{ext}"
 
 if os.path.exists(pred_zarr_path):
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(60)  # Set timeout to 60 seconds
-    try:
-        confirm = input("Zarr pred path exists already, do you want to over-write? (yes/no): ").strip().lower()
-    except TimeoutError:
-        confirm = "no"
-        print("\nNo response. Defaulting to 'no'.")
+#    signal.signal(signal.SIGALRM, timeout_handler)
+#    signal.alarm(60)  # Set timeout to 60 seconds
+#    try:
+#        confirm = input("Zarr pred path exists already, do you want to over-write? (yes/no): ").strip().lower()
+#    except TimeoutError:
+#        confirm = "no"
+#        print("\nNo response. Defaulting to 'no'.")
 
-    signal.alarm(0)  # Disable alarm
+#    signal.alarm(0)  # Disable alarm
 
-    if confirm != "yes":
+#    if confirm != "yes":
+    if not args.overwrite_zarr:
         new_path = get_new_filepath(pred_zarr_path)
         print(f"Renaming file to avoid overwrite: {new_path}")
         pred_zarr_path = new_path
