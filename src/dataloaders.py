@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, get_worker_info
 import xarray as xr
 from src.interp_utils import *
 import datetime
@@ -8,6 +8,27 @@ import numpy as np
 import pyproj
 import h5py
 
+def open_zarr_range(zarr_dir, start_date, end_date):
+    if not isinstance(start_date, str):
+        start_date = str(start_date).replace('-','')
+    if not isinstance(end_date, str):
+        end_date = str(end_date).replace('-','')
+
+    all_zarrs = sorted(f for f in os.listdir(zarr_dir) if f.endswith(".zarr"))
+    selected = [f for f in all_zarrs if start_date <= f[:10] <= end_date]
+
+    if not selected:
+        raise ValueError("No Zarr stores found in the given date range.")
+
+    datasets = []
+    for f in selected:
+        path = os.path.join(zarr_dir, f)
+        ds = xr.open_dataset(path, engine="zarr", chunks={})  # lazy load
+        datasets.append(ds)
+
+    combined = xr.concat(datasets, dim="time")
+
+    return combined
 
 class NeurOST_dataset(Dataset):
     def __init__(self, 
@@ -45,8 +66,6 @@ class NeurOST_dataset(Dataset):
         self.n = n
         self.L_x = L_x
         self.L_y = L_y
-        files = sorted(os.listdir(self.sst_zarr))
-        self.zarr_paths = [os.path.join(self.sst_zarr, f) for f in files]
         self.force_recache = force_recache
         self.leave_out_altimeters = leave_out_altimeters
         self.withhold_sat = withhold_sat
@@ -58,7 +77,7 @@ class NeurOST_dataset(Dataset):
         self.ssh_out_n_max = ssh_out_n_max
         
                 
-        self.ds_sst = xr.open_mfdataset(self.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
+        self.ds_sst = open_zarr_range(self.sst_zarr,self.start_date - datetime.timedelta(days = self.N_t//2 + 1), self.end_date + datetime.timedelta(days = self.N_t//2 + 1)) #xr.open_mfdataset(self.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
         if np.min(self.ds_sst['time']) > np.datetime64(str(self.start_date - datetime.timedelta(days = self.N_t//2)),'ns'):
             raise ValueError("MUR SST zarr file missing dates at beginning of desired time range")
         if np.max(self.ds_sst['time']) < np.datetime64(str(self.end_date + datetime.timedelta(days = self.N_t//2)),'ns'):
@@ -83,9 +102,6 @@ class NeurOST_dataset(Dataset):
         else:
             self.sla_t_offset = sla_t_offset
         
-
-        self.hdf5 = h5py.File(self.sla_hdf5_path, 'r')
-        
         if sla_t_offset is None:
             self.time_bins = np.arange(0,self.ds_sst['time'].shape[0], self.time_bin_size)
         else:
@@ -102,27 +118,38 @@ class NeurOST_dataset(Dataset):
         {"proj":'latlong', "ellps":'WGS84', "datum":'WGS84'},
         {"proj":'geocent', "ellps":'WGS84', "datum":'WGS84'},
         )
+
+        self.hdf5 = None
+        self.ds_sst = None
         
         
     def __len__(self):
         return np.size(self.t_idxs)
     
     
-    def __getitem__(self, idx):
-        
+    def __getitem__(self, idx):        
         r = self.r_idxs[idx]
         t = self.t_idxs[idx]
         
         lon0 = 0.25*(self.coord_grids[r,int(self.n/2)-1,int(self.n/2)-1,0]+self.coord_grids[r,int(self.n/2)-1,int(self.n/2),0]+self.coord_grids[r,int(self.n/2),int(self.n/2)-1,0]+self.coord_grids[r,int(self.n/2),int(self.n/2),0])
         lat0 = 0.25*(self.coord_grids[r,int(self.n/2)-1,int(self.n/2)-1,1]+self.coord_grids[r,int(self.n/2)-1,int(self.n/2),1]+self.coord_grids[r,int(self.n/2),int(self.n/2)-1,1]+self.coord_grids[r,int(self.n/2),int(self.n/2),1])
+
+        if self.hdf5 is None:
+            self.hdf5 = h5py.File(self.sla_hdf5_path, 'r')
+
+        if self.ds_sst is None:
+            self.ds_sst = open_zarr_range(self.sst_zarr,self.start_date - datetime.timedelta(days = self.N_t//2 + 1), self.end_date + datetime.timedelta(days = self.N_t//2 + 1)) #xr.open_mfdataset(self.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
+            if np.min(self.ds_sst['time']) > np.datetime64(str(self.start_date - datetime.timedelta(days = self.N_t//2)),'ns'):
+                raise ValueError("MUR SST zarr file missing dates at beginning of desired time range")
+            if np.max(self.ds_sst['time']) < np.datetime64(str(self.end_date + datetime.timedelta(days = self.N_t//2)),'ns'):
+                raise ValueError("MUR SST zarr file missing dates at end of desired time range")
+            
+            self.ds_sst = self.ds_sst.sel(time=slice(str(self.start_date - datetime.timedelta(days = self.N_t//2)), str(self.end_date + datetime.timedelta(days = self.N_t//2))))            
         
         if self.use_sst:
-        
             sst = grid_sst_hr(self.ds_sst.isel(time=slice(t-self.N_t//2, t+self.N_t//2)),self.N_t,self.n, self.L_x, self.L_y, lon0, lat0, self.coord_grids[r,])
-
             sst[sst!=0] = (sst[sst!=0]-self.mean_sst)/self.std_sst
             
-        
         ssh_in, ssh_out = get_ssh_h5(r = r, 
                                   t = t + self.sla_t_offset, 
                                   coord_grid = self.coord_grids, 
@@ -156,8 +183,6 @@ class NeurOST_dataset(Dataset):
             else:
                 ssh_out_final = ssh_out[:,:self.ssh_out_n_max,:]
                 
-                
-        
         if self.use_sst:
             if ssh_out is not None:
                 return torch.from_numpy(np.stack((ssh_in, sst), axis = 1).astype(np.float32)), torch.from_numpy(ssh_out_final.astype(np.float32))
@@ -169,26 +194,21 @@ class NeurOST_dataset(Dataset):
             else:
                 return torch.from_numpy(np.expand_dims(ssh_in, axis = 1).astype(np.float32)), torch.from_numpy(np.zeros((self.N_t,self.ssh_out_n_max,3),dtype=np.float32))
         
-    
+
 
             
             
-# Worker initialization function: each worker loads (lazily) its own copy of the SSH and SST datasets.
-def worker_init_fn(worker_id, dataset):
-    worker_seed = 42 
-    seed = worker_seed + worker_id
-    np.random.seed(seed)
-    torch.manual_seed(seed) 
-    sla_hdf5 = h5py.File(dataset.sla_hdf5_path, 'r')
+def worker_init_fn(worker_id):
+    from dask.distributed import Client
+    client = Client(processes=False)  # Disable Dask multi-processing to not interfere with Pytorch.
+    worker_info = get_worker_info()
+    dataset = worker_info.dataset  # this is your Dataset instance
     
-    ds_sst = xr.open_mfdataset(dataset.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
-    if np.min(ds_sst['time']) > np.datetime64(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)),'ns'):
+    dataset.ds_sst = open_zarr_range(dataset.sst_zarr,dataset.start_date - datetime.timedelta(days = dataset.N_t//2 + 1), dataset.end_date + datetime.timedelta(days = dataset.N_t//2 + 1)) #xr.open_mfdataset(self.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
+    if np.min(dataset.ds_sst['time']) > np.datetime64(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)),'ns'):
         raise ValueError("MUR SST zarr file missing dates at beginning of desired time range")
-    if np.max(ds_sst['time']) < np.datetime64(str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2)),'ns'):
+    if np.max(dataset.ds_sst['time']) < np.datetime64(str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2)),'ns'):
         raise ValueError("MUR SST zarr file missing dates at end of desired time range")
-
-    ds_sst = ds_sst.sel(time=slice(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)), str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2))))
     
-    # Make the data available for the worker to access
-    torch.utils.data.get_worker_info().dataset.hdf5 = sla_hdf5
-    torch.utils.data.get_worker_info().dataset.ds_sst = ds_sst
+    dataset.ds_sst = dataset.ds_sst.sel(time=slice(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)), str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2))))
+    dataset.hdf5 = h5py.File(dataset.sla_hdf5_path, 'r')

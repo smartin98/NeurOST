@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import os
+import sys
+sys.path.append('src')
 from src.simvp_model import *
 from src.dataloaders import *
 import datetime
@@ -87,28 +89,6 @@ dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
                          )
 
 
-# Worker initialization function: each worker loads (lazily) its own copy of the SSH and SST datasets.
-def worker_init_fn(worker_id, dataset):
-
-    worker_seed = 42 
-    seed = worker_seed + worker_id
-    np.random.seed(seed)
-    torch.manual_seed(seed) 
-    sla_hdf5 = h5py.File(dataset.sla_hdf5_path, 'r')
-    
-    ds_sst = xr.open_mfdataset(dataset.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
-    if np.min(ds_sst['time']) > np.datetime64(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)),'ns'):
-        raise ValueError("MUR SST zarr file missing dates at beginning of desired time range")
-    if np.max(ds_sst['time']) < np.datetime64(str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2)),'ns'):
-        raise ValueError("MUR SST zarr file missing dates at end of desired time range")
-
-    ds_sst = ds_sst.sel(time=slice(str(dataset.start_date - datetime.timedelta(days = dataset.N_t//2)), str(dataset.end_date + datetime.timedelta(days = dataset.N_t//2))))
-    
-    # Make the data available for the worker to access
-    torch.utils.data.get_worker_info().dataset.hdf5 = sla_hdf5
-    torch.utils.data.get_worker_info().dataset.ds_sst = ds_sst
-
-
 if args.no_sst:
     model = SimVP_Model_no_skip(in_shape=(args.n_t,1,args.n,args.n),model_type='gsta',hid_S=8,hid_T=128,drop=0.2,drop_path=0.15).to(device)
 else:
@@ -141,7 +121,7 @@ if multiprocessing:
                             batch_size = args.batch_size, 
                             shuffle = False, 
                             num_workers = args.n_cpu_workers, 
-                            worker_init_fn = lambda worker_id: worker_init_fn(worker_id, dataset), # worker_init_fn defined in src.dataloaders.py
+                            worker_init_fn = worker_init_fn, # defined in src.dataloaders...
                             persistent_workers = True,
                             prefetch_factor = args.prefetch_factor
                            )

@@ -108,8 +108,7 @@ def box(x_bounds, y_bounds, refinement=100):
     return xs, ys
 
 # bin average high res MUR L4 SST (MW+IR observations)
-def grid_sst_hr(data_sst_hr, n_t, n, L_x, L_y, lon0, lat0, coord_grid):
-    ds = data_sst_hr
+def grid_sst_hr(ds, n_t, n, L_x, L_y, lon0, lat0, coord_grid):
     
     lon_grid = coord_grid[:,:,0].ravel()
     lat_grid = coord_grid[:,:,1].ravel()
@@ -268,6 +267,7 @@ def create_sla_chunks(start_date, end_date, chunk_dir = 'input_data/sla_cache', 
     time_idx = np.digitize(time_vals, time_bins) - 1
     lat_vals = ds['latitude'].values.ravel()
     lon_vals = ds['longitude'].values.ravel()
+    lon_vals = ((lon_vals + 180) % 360) - 180 # handle either longitude input format
     lat_idx = np.digitize(lat_vals, lat_bins) - 1
     lon_idx = np.digitize(lon_vals, lon_bins) - 1
 

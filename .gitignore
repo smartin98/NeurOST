@@ -2,6 +2,7 @@ input_data/
 auxilliary_data/
 global_maps/
 predictions/
+debug.ipynb
 .netrc
 .copernicusmarine/.copernicusmarine-credentials
 .ipynb_checkpoints
