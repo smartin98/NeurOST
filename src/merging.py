@@ -456,8 +456,19 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
     ds = ds.where(ds_dist['distance'] > mask_coast_dist, np.nan) # mask points close to coastlines
     
     if mask_ice:
-        
-        ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date).replace('-','') + '.zarr'))
+        try:
+            ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date).replace('-','') + '.zarr'))
+            missing_mask = False
+        except:
+            missing_mask = True
+            print('Missing SST Zarr file for '+str(date)+' resorting to using ' + str(date - datetime.timedelta(days=1)))
+            try:
+                ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date - datetime.timedelta(days=1)).replace('-','') + '.zarr'))
+                ice_mask_day = date - datetime.timedelta(days=1)
+            except:
+                print('Missing SST Zarr file for '+str(date - datetime.timedelta(days=1))+' resorting to using ' + str(date + datetime.timedelta(days=1)))
+                ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date + datetime.timedelta(days=1)).replace('-','') + '.zarr'))
+                ice_mask_day = date + datetime.timedelta(days=1)
         ds_ice_mask = ds_ice_mask.rename({'lon':'longitude', 'lat':'latitude'})
         ds_ice_mask['longitude'] = ds_ice_mask['longitude'] % 360
         ds_ice_mask = ds_ice_mask.sortby('longitude')
@@ -466,6 +477,10 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         ice_arr[np.isnan(ice_arr)] = 0 # NaN -> no ice
         interp['ice_conc'] = (['latitude','longitude'],ice_arr)
         ds = ds.where(interp['ice_conc'] < 0.01) # mask out pixels with greater than 1% sea ice concentration
+        if missing_mask:
+            ds.attrs['Ice mask note'] = 'Ice mask taken from MUR SST on date '+str(ice_mask_day).replace('-','')
+        else:
+            ds.attrs['Ice mask note'] = 'Ice mask taken from MUR SST on date '+str(date).replace('-','')
     
     return ds
 
