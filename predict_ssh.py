@@ -118,23 +118,6 @@ model.eval()
 
 pred_zarr_path = os.path.join(args.output_zarr_dir, args.experiment_name + '_unmerged_preds_' + str(start_date).replace('-','') + '_' + str(end_date).replace('-','') + '.zarr')
 
-if multiprocessing:
-    dataloader = DataLoader(dataset, 
-                            batch_size = args.batch_size, 
-                            shuffle = False, 
-                            num_workers = args.n_cpu_workers, 
-                            worker_init_fn = worker_init_fn, # defined in src.dataloaders...
-                            persistent_workers = True,
-                            prefetch_factor = args.prefetch_factor
-                           )
-else:
-    dataloader = DataLoader(dataset, 
-                            batch_size = args.batch_size, 
-                            shuffle = False,
-                           )
-    
-
-
 #########
 # handle case where existing zarr file would be over-written. user is asked to confirm if they want to over-write. If no (or if no response in 60 s), we ensure doesn't over-write by adding integer to end of file path.
 def timeout_handler(signum, frame):
@@ -168,19 +151,28 @@ if os.path.exists(pred_zarr_path):
 # initialise zarr store to store unmerged patch predictions
 pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days + 1, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
 
-data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.n_cpu_workers)
+if multiprocessing:
+    dataloader = DataLoader(dataset, 
+                            batch_size = args.batch_size, 
+                            shuffle = False, 
+                            num_workers = args.n_cpu_workers, 
+                            worker_init_fn = worker_init_fn, # defined in src.dataloaders...
+                            persistent_workers = True,
+                            prefetch_factor = args.prefetch_factor
+                           )
+else:
+    dataloader = DataLoader(dataset, 
+                            batch_size = args.batch_size, 
+                            shuffle = False,
+                           )
 
 current_idx = 0
 
-r_idxs = np.arange(coord_grids.shape[0])
-t_idxs = np.arange((end_date - start_date).days + 1)
-
-t_idxs, r_idxs = np.meshgrid(t_idxs, r_idxs)
-
-t_idxs, r_idxs = t_idxs.ravel(), r_idxs.ravel()
+r_idxs = dataset.r_idxs
+t_idxs = dataset.t_idxs - np.min(dataset.t_idxs)
 
 with torch.no_grad():
-    for input_data, _ in tqdm(data_loader, desc = "Running batch predictions"):
+    for input_data, _ in tqdm(dataloader, desc = "Running batch predictions"):
         
         input_data = input_data.to(device)
         

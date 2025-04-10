@@ -79,11 +79,13 @@ class NeurOST_dataset(Dataset):
                 
         self.ds_sst = open_zarr_range(self.sst_zarr,self.start_date - datetime.timedelta(days = self.N_t//2 + 1), self.end_date + datetime.timedelta(days = self.N_t//2 + 1)) #xr.open_mfdataset(self.zarr_paths, engine="zarr", combine="by_coords", parallel=True)
         if np.min(self.ds_sst['time']) > np.datetime64(str(self.start_date - datetime.timedelta(days = self.N_t//2)),'ns'):
-            raise ValueError("MUR SST zarr file missing dates at beginning of desired time range")
+            raise RuntimeError("MUR SST zarr file missing dates at beginning of desired time range")
         if np.max(self.ds_sst['time']) < np.datetime64(str(self.end_date + datetime.timedelta(days = self.N_t//2)),'ns'):
-            raise ValueError("MUR SST zarr file missing dates at end of desired time range")
+            raise RuntimeError("MUR SST zarr file missing dates at end of desired time range")
         
         self.ds_sst = self.ds_sst.sel(time=slice(str(self.start_date - datetime.timedelta(days = self.N_t//2)), str(self.end_date + datetime.timedelta(days = self.N_t//2))))
+        if self.ds_sst['time'].shape[0] != ((self.end_date + datetime.timedelta(days = self.N_t//2)) - (self.start_date - datetime.timedelta(days = self.N_t//2))).days:
+            raise RuntimeError("MUR SST zarr file missing dates within desired time range, check downloading went ok")
         t_idxs = np.arange(self.N_t//2, self.ds_sst['time'].shape[0] - self.N_t//2, 1)
         r_idxs = np.arange(self.coord_grids.shape[0])
         
