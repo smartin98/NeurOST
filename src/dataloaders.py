@@ -84,7 +84,17 @@ class NeurOST_dataset(Dataset):
             raise RuntimeError("MUR SST zarr file missing dates at end of desired time range")
         
         self.ds_sst = self.ds_sst.sel(time=slice(str(self.start_date - datetime.timedelta(days = self.N_t//2)), str(self.end_date + datetime.timedelta(days = self.N_t//2))))
-        if self.ds_sst['time'].shape[0] != ((self.end_date + datetime.timedelta(days = self.N_t//2)) - (self.start_date - datetime.timedelta(days = self.N_t//2))).days:
+
+        ds_sst_t_length = self.ds_sst['time'].shape[0]
+        
+        t_length_correct = ((self.end_date + datetime.timedelta(days = self.N_t//2)) - (self.start_date - datetime.timedelta(days = self.N_t//2))).days + 1
+        
+        
+        if ds_sst_t_length != t_length_correct:
+            print('Length of ds_sst in time dimension:')
+            print(ds_sst_t_length)
+            print('Correct length of ds_sst in time dimension if no missing times:')
+            print(t_length_correct)
             raise RuntimeError("MUR SST zarr file missing dates within desired time range, check downloading went ok")
         t_idxs = np.arange(self.N_t//2, self.ds_sst['time'].shape[0] - self.N_t//2, 1)
         r_idxs = np.arange(self.coord_grids.shape[0])

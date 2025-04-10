@@ -118,11 +118,6 @@ model.eval()
 
 pred_zarr_path = os.path.join(args.output_zarr_dir, args.experiment_name + '_unmerged_preds_' + str(start_date).replace('-','') + '_' + str(end_date).replace('-','') + '.zarr')
 
-#########
-# handle case where existing zarr file would be over-written. user is asked to confirm if they want to over-write. If no (or if no response in 60 s), we ensure doesn't over-write by adding integer to end of file path.
-def timeout_handler(signum, frame):
-    raise TimeoutError
-    
 def get_new_filepath(filepath):
     base, ext = os.path.splitext(filepath)
     i = 0
@@ -131,22 +126,11 @@ def get_new_filepath(filepath):
     return f"{base}{i}{ext}"
 
 if os.path.exists(pred_zarr_path):
-#    signal.signal(signal.SIGALRM, timeout_handler)
-#    signal.alarm(60)  # Set timeout to 60 seconds
-#    try:
-#        confirm = input("Zarr pred path exists already, do you want to over-write? (yes/no): ").strip().lower()
-#    except TimeoutError:
-#        confirm = "no"
-#        print("\nNo response. Defaulting to 'no'.")
-
-#    signal.alarm(0)  # Disable alarm
-
-#    if confirm != "yes":
     if not args.overwrite_zarr:
         new_path = get_new_filepath(pred_zarr_path)
-        print(f"Renaming file to avoid overwrite: {new_path}")
+        print(f"Renaming file to avoid overwrite: {new_path}, if you want to overwrite use option --overwrite_zarr")
         pred_zarr_path = new_path
-##########
+
 
 # initialise zarr store to store unmerged patch predictions
 pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days + 1, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
