@@ -374,7 +374,7 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         # currents:
         ds['ugosa'] = (-g/f)*ds['dSLA_dy']
         ds['vgosa'] = (g/f)*ds['dSLA_dx']
-        ds.drop(['dSLA_dx', 'dSLA_dy'])
+        ds = ds.drop(['dSLA_dx', 'dSLA_dy'])
         ds['ugos'] = ds['ugosa'] + ds_mdt['u']
         ds['vgos'] = ds['vgosa'] + ds_mdt['v']
         
