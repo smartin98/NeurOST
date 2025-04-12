@@ -108,7 +108,8 @@ def box(x_bounds, y_bounds, refinement=100):
     return xs, ys
 
 # bin average high res MUR L4 SST (MW+IR observations)
-def grid_sst_hr(ds, n_t, n, L_x, L_y, lon0, lat0, coord_grid):
+def grid_sst_hr(data_sst_hr, n_t, n, L_x, L_y, lon0, lat0, coord_grid):
+    ds = data_sst_hr
     
     lon_grid = coord_grid[:,:,0].ravel()
     lat_grid = coord_grid[:,:,1].ravel()
@@ -474,8 +475,9 @@ def get_ssh_h5(r,t,coord_grid,transformer_ll2xyz, time_bins, lon_bins, lat_bins,
             else:
                 # specify either 1 sat or list of sats to withhold (e.g. for inference while maintaining independent sat for validation)
                 withhold = withhold_sat
-            mask = (s != withhold) if isinstance(withhold, str) else ~np.isin(s, withhold)
 
+            s = np.array([re.sub(r"^b'(.*)'$", r"\1", x) for x in s.astype(str)])
+            mask = (s != withhold) if isinstance(withhold, str) else ~np.isin(s, withhold)
             d_out = d[~mask]
             d, s = d[mask], s[mask]
 
