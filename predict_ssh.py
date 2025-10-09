@@ -162,8 +162,9 @@ else:
 
 current_idx = args.resume_idx
 
-r_idxs = dataset.r_idxs
-t_idxs = dataset.t_idxs - np.min(dataset.t_idxs)
+base_dataset = dataset.dataset if isinstance(dataset, torch.utils.data.Subset) else dataset
+r_idxs = base_dataset.r_idxs
+t_idxs = base_dataset.t_idxs - np.min(base_dataset.t_idxs)
 
 with torch.no_grad():
     for input_data, _ in tqdm(dataloader, desc = "Running batch predictions"):
