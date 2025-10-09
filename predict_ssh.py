@@ -39,6 +39,9 @@ parser.add_argument('--n_cpu_workers', type = int, default = 1, help = "Number o
 parser.add_argument('--batch_size', type = int, default = 32, help = "Number of examples per batch, adjust based on your GPU memory.")
 parser.add_argument('--prefetch_factor', type = int, default = 2, help = "Dataloader prefetch factor.")
 parser.add_argument('--overwrite_zarr', action = "store_true", help = "over-write the prediction zarr store if an existing store has the same name.")
+parser.add_argument('--resume_idx', type=int, default=0,
+                    help='Index in the dataset to resume prediction from (default=0, i.e. start from beginning).')
+
 
 
 args = parser.parse_args()
@@ -90,6 +93,10 @@ dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
                           ssh_out_n_max = 1000,
                          )
 
+if args.resume_idx > 0:
+    print(f"Resuming from dataset index {args.resume_idx} / {len(dataset)}")
+    dataset = torch.utils.data.Subset(dataset, range(args.resume_idx, len(dataset)))
+
 
 if args.no_sst:
     model = SimVP_Model_no_skip(in_shape=(args.n_t,1,args.n,args.n),model_type='gsta',hid_S=8,hid_T=128,drop=0.2,drop_path=0.15).to(device)
@@ -125,15 +132,18 @@ def get_new_filepath(filepath):
         i += 1
     return f"{base}{i}{ext}"
 
-if os.path.exists(pred_zarr_path):
-    if not args.overwrite_zarr:
-        new_path = get_new_filepath(pred_zarr_path)
-        print(f"Renaming file to avoid overwrite: {new_path}, if you want to overwrite use option --overwrite_zarr")
-        pred_zarr_path = new_path
+# if os.path.exists(pred_zarr_path):
+#     if not args.overwrite_zarr:
+#         new_path = get_new_filepath(pred_zarr_path)
+#         print(f"Renaming file to avoid overwrite: {new_path}, if you want to overwrite use option --overwrite_zarr")
+#         pred_zarr_path = new_path
 
 
 # initialise zarr store to store unmerged patch predictions
-pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days + 1, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
+if os.path.exists(pred_zarr_path):
+    pred_store = zarr.open(pred_zarr_path, mode = 'r+', shape=((end_date-start_date).days + 1, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
+else:
+    pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days + 1, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
 
 if multiprocessing:
     dataloader = DataLoader(dataset, 
@@ -150,7 +160,7 @@ else:
                             shuffle = False,
                            )
 
-current_idx = 0
+current_idx = args.resume_idx
 
 r_idxs = dataset.r_idxs
 t_idxs = dataset.t_idxs - np.min(dataset.t_idxs)
@@ -182,4 +192,3 @@ with torch.no_grad():
         current_idx += len(input_data)
         
 print('Inference complete! Un-merged patch predictions saved at: ' + pred_zarr_path + ', run map_merging script to create final gridded product.')
-
