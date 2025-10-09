@@ -106,10 +106,6 @@ dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
                           ssh_out_n_max = 1000,
                          )
 
-if args.resume_idx > 0:
-    print(f"Resuming from dataset index {args.resume_idx} / {len(dataset)}")
-    dataset = torch.utils.data.Subset(dataset, range(args.resume_idx, len(dataset)))
-
 
 if args.no_sst:
     model = SimVP_Model_no_skip(in_shape=(args.n_t,1,args.n,args.n),model_type='gsta',hid_S=8,hid_T=128,drop=0.2,drop_path=0.15).to(device)
