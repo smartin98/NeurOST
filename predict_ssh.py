@@ -10,6 +10,19 @@ import zarr
 import argparse
 import signal
 from tqdm import tqdm
+from torch.utils.data import DataLoader, Sampler
+
+class ResumeSequentialSampler(Sampler):
+    """Sequential sampler that starts from a given index."""
+    def __init__(self, dataset, start_idx=0):
+        self.dataset = dataset
+        self.start_idx = start_idx
+
+    def __iter__(self):
+        return iter(range(self.start_idx, len(self.dataset)))
+
+    def __len__(self):
+        return len(self.dataset) - self.start_idx
 
 parser = argparse.ArgumentParser()
 
@@ -145,26 +158,31 @@ if os.path.exists(pred_zarr_path):
 else:
     pred_store = zarr.open(pred_zarr_path, mode = 'w', shape=((end_date-start_date).days + 1, coord_grids.shape[0], args.n, args.n), chunks=(10, 10, args.n, args.n), dtype="float32")
 
-if multiprocessing:
-    dataloader = DataLoader(dataset, 
-                            batch_size = args.batch_size, 
-                            shuffle = False, 
-                            num_workers = args.n_cpu_workers, 
-                            worker_init_fn = worker_init_fn, # defined in src.dataloaders...
-                            persistent_workers = True,
-                            prefetch_factor = args.prefetch_factor
-                           )
-else:
-    dataloader = DataLoader(dataset, 
-                            batch_size = args.batch_size, 
-                            shuffle = False,
-                           )
+sampler = ResumeSequentialSampler(dataset, start_idx=args.resume_idx)
 
+if multiprocessing:
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        num_workers=args.n_cpu_workers,
+        worker_init_fn=worker_init_fn,
+        persistent_workers=True,
+        prefetch_factor=args.prefetch_factor
+    )
+else:
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        shuffle=False
+    )
+
+print(f"Resuming prediction from dataset index {args.resume_idx} / {len(dataset)}")
 current_idx = args.resume_idx
 
-base_dataset = dataset.dataset if isinstance(dataset, torch.utils.data.Subset) else dataset
-r_idxs = base_dataset.r_idxs
-t_idxs = base_dataset.t_idxs - np.min(base_dataset.t_idxs)
+r_idxs = dataset.r_idxs
+t_idxs = dataset.t_idxs - np.min(dataset.t_idxs)
 
 with torch.no_grad():
     for input_data, _ in tqdm(dataloader, desc = "Running batch predictions"):
