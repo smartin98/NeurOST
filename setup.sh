@@ -16,8 +16,7 @@ cd ..
 wget https://dataverse.harvard.edu/api/access/datafile/8111925 -O coord_grids.npy
 mkdir model_weights
 cd model_weights
-wget https://dataverse.harvard.edu/api/access/datafile/8131431 -O 
-simvp_ssh_sst_ns1000000global_weights_epoch46
+wget https://dataverse.harvard.edu/api/access/datafile/8131431 -O simvp_ssh_sst_ns1000000global_weights_epoch46
 wget https://dataverse.harvard.edu/api/access/datafile/8131432 -O simvp_ssh_ns1000000_global_weights_epoch45
 cd ..
 cd ..
