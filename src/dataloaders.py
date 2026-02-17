@@ -90,7 +90,7 @@ class NeurOST_dataset(Dataset):
         t_length_correct = ((self.end_date + datetime.timedelta(days = self.N_t//2)) - (self.start_date - datetime.timedelta(days = self.N_t//2))).days + 1
         
         
-        if ds_sst_t_length != t_length_correct:
+        if ds_sst_t_length != t_length_correct and self.use_sst:
             print('Length of ds_sst in time dimension:')
             print(ds_sst_t_length)
             print('Correct length of ds_sst in time dimension if no missing times:')
