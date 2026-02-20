@@ -114,7 +114,7 @@ else:
 
 if args.model_weights_path is None:
     if args.no_sst:
-        model_weights_path = "input_data/simvp_ssh_ns1000000_global_weights_epoch45"
+        model_weights_path = "input_data/model_weights/simvp_ssh_ns1000000_global_weights_epoch45"
     else:
         model_weights_path = "input_data/model_weights/simvp_ssh_sst_ns1000000global_weights_epoch46"
 else:
