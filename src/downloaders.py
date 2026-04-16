@@ -94,6 +94,20 @@ def cmems_download_task(args):
     outdir = os.path.join('input_data', 'cmems_sla', sat)
     os.makedirs(outdir, exist_ok=True)
     ds_id = ("cmems_obs-sl_glo_phy-ssh_nrt_" + sat + "-l3-duacs_PT1S") if mode == 'nrt' else ("cmems_obs-sl_glo_phy-ssh_my_" + sat + "-l3-duacs_PT1S")
+
+    # CMEMS sometimes reprocesses files and changes the production date in the filename,
+    # leaving stale duplicates. Remove any existing files whose observation month matches
+    # this search pattern before downloading so old versions don't persist alongside new ones.
+    # Filenames end with _YYYYMMDD_YYYYMMDD.nc; chars [-20:-14] are the observation YYYYMM.
+    parts = search.split('/')          # ['*', 'YYYY', 'MM', '*.nc']
+    obs_yyyymm = parts[1] + parts[2]   # e.g. '202401'
+    for fname in os.listdir(outdir):
+        if fname.endswith('.nc') and len(fname) >= 20 and fname[-20:-14] == obs_yyyymm:
+            try:
+                os.remove(os.path.join(outdir, fname))
+            except OSError:
+                pass
+
     try:
         print(f"[CMEMS {mode}] {sat} -> {search}")
         cm.get(
