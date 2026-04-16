@@ -28,7 +28,8 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--start', type = str, help = 'start date for SSH mapping (YYYYMMDD)')
 parser.add_argument('--end', type = str, help = 'end date for SSH mapping (YYYYMMDD)')
-parser.add_argument('--sst_zarr_path', type = str, default = 'input_data/mur_coarse_zarrs', help = "Path to SST zarr store")
+parser.add_argument('--sst_cache_dir', type = str, default = 'input_data/sst_cache', help = "Path to quarterly SST cache directory")
+parser.add_argument('--sla_cache_dir', type = str, default = 'input_data/sla_cache', help = "Path to quarterly SLA cache directory")
 parser.add_argument('--experiment_name', type = str, default = 'NeurOST_SSH-SST', help = 'name of SSH mapping experiment (will be used in filenames of output)')
 parser.add_argument("--withheld_sats", nargs = "+", type = str, help = "List all satellites to withhold from input using the standard short names from CMEMS (e.g. s3a, al, swon, etc.)")
 parser.add_argument('--no_sst', action = "store_true", help = "Use only SSH in input")
@@ -42,11 +43,7 @@ parser.add_argument('--n_t', type = int, default = 30, help = "Length (in days) 
 parser.add_argument('--n', type = int, default = 128, help = "Size of the spatial mapping window for the network (integer number of pixels)")
 parser.add_argument('--L_x', type = float, default = 960e3, help = "Size of the spatial mapping window for the network in the zonal direction (float in km)")
 parser.add_argument('--L_y', type = float, default = 960e3, help = "Size of the spatial mapping window for the network in the meridional direction (float in km)")
-parser.add_argument('--force_recache', action = "store_true", help = "Re-create SSH HDF5 cache for desired mapping range even if covered by existing cache")
 parser.add_argument('--filtered_sla', action = "store_true", help = "Use sla_filtered variable from CMEMS product rather than sla_unfiltered (default).")
-parser.add_argument('--time_bin_size', type = float, default = 10, help = "Time bin size (in days) for SSH cache")
-parser.add_argument('--lon_bin_size', type = float, default = 10, help = "Longitude bin size (in deg) for SSH cache")
-parser.add_argument('--lat_bin_size', type = float, default = 10, help = "Latitude bin size (in deg) for SSH cache")
 parser.add_argument('--output_zarr_dir', type = str, default = 'predictions/unmerged_zarrs/', help = "Path to directory within which unmerged predictions will be stored in zarr store.")
 parser.add_argument('--n_cpu_workers', type = int, default = 1, help = "Number of CPU workers used by dataloader to parallelize data loading (strongly recommend setting as high as your resources allow to ensure GPU saturation)")
 parser.add_argument('--batch_size', type = int, default = 32, help = "Number of examples per batch, adjust based on your GPU memory.")
@@ -83,7 +80,8 @@ end_date = datetime.date(int(args.end.replace('-','')[:4]), int(args.end.replace
 coord_grids = np.load(args.coord_grid_path)
 
 
-dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
+dataset = NeurOST_dataset(sst_cache_dir = args.sst_cache_dir,
+                          sla_cache_dir = args.sla_cache_dir,
                           start_date = start_date,
                           end_date = end_date,
                           N_t = args.n_t,
@@ -95,14 +93,10 @@ dataset = NeurOST_dataset(sst_zarr = args.sst_zarr_path,
                           n = args.n,
                           L_x = args.L_x,
                           L_y = args.L_y,
-                          force_recache = args.force_recache,
                           leave_out_altimeters = leave_out_altimeters,
                           withhold_sat = args.withheld_sats,
                           filtered = args.filtered_sla,
                           use_sst = not args.no_sst,
-                          time_bin_size = args.time_bin_size,
-                          lon_bin_size = args.lon_bin_size,
-                          lat_bin_size = args.lat_bin_size,
                           ssh_out_n_max = 1000,
                          )
 

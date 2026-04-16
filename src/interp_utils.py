@@ -1,163 +1,97 @@
 import numpy as np
 from numpy.random import randint
 import pyproj
-import scipy.spatial.transform 
-import scipy.stats as stats
-from scipy import interpolate
-from scipy.spatial import Delaunay
-from scipy.interpolate import LinearNDInterpolator
-import xarray as xr 
+import scipy.spatial.transform
+import xarray as xr
 import datetime
 import os
 from tqdm import tqdm
-import pandas as pd
-import shutil
-import h5py
-import re
 
-# function to list all files within a directory including within any subdirectories
-def GetListOfFiles(dirName, ext = '.nc'):
-    # create a list of file and sub directories 
-    # names in the given directory 
+# Reference epoch for absolute day indexing (standard CMEMS/AVISO epoch)
+EPOCH = datetime.date(1993, 1, 1)
+
+# ---------- File utilities ----------
+
+def GetListOfFiles(dirName, ext='.nc'):
     listOfFile = os.listdir(dirName)
     allFiles = list()
-    # Iterate over all the entries
     for entry in listOfFile:
-        # Create full path
         fullPath = os.path.join(dirName, entry)
-        # If entry is a directory then get the list of files in this directory 
         if os.path.isdir(fullPath):
             allFiles = allFiles + GetListOfFiles(fullPath)
         else:
             if fullPath.endswith(ext):
-                allFiles.append(fullPath)               
+                allFiles.append(fullPath)
     return allFiles
 
-# Define the pyproj transformer objects used to transform coordinates between (lat,long,alt) and ECEF in both directions
+def empty_directory(directory):
+    if os.path.exists(directory) and os.path.isdir(directory):
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+
+# ---------- Coordinate transforms ----------
+
 transformer_ll2xyz = pyproj.Transformer.from_crs(
-        {"proj":'latlong', "ellps":'WGS84', "datum":'WGS84'},
-        {"proj":'geocent', "ellps":'WGS84', "datum":'WGS84'},
-        )
+    {"proj": 'latlong', "ellps": 'WGS84', "datum": 'WGS84'},
+    {"proj": 'geocent', "ellps": 'WGS84', "datum": 'WGS84'},
+)
 transformer_xyz2ll = pyproj.Transformer.from_crs(
-        {"proj":'geocent', "ellps":'WGS84', "datum":'WGS84'},
-        {"proj":'latlong', "ellps":'WGS84', "datum":'WGS84'},
-        )
+    {"proj": 'geocent', "ellps": 'WGS84', "datum": 'WGS84'},
+    {"proj": 'latlong', "ellps": 'WGS84', "datum": 'WGS84'},
+)
 
-# convert ECEF coords to lat,lon:
-def xyz2ll(x,y,z, lat_org, lon_org, alt_org, transformer1, transformer2):
-
-    # transform origin of local tangent plane to ECEF coordinates (https://en.wikipedia.org/wiki/Earth-centered,_Earth-fixed_coordinate_system)
-    x_org, y_org, z_org = transformer1.transform( lon_org,lat_org,  alt_org,radians=False)
-    ecef_org=np.array([[x_org,y_org,z_org]]).T
-
-    # define 3D rotation required to transform between ECEF and ENU coordinates (https://gssc.esa.int/navipedia/index.php/Transformations_between_ECEF_and_ENU_coordinates)
-    rot1 =  scipy.spatial.transform.Rotation.from_euler('x', -(90-lat_org), degrees=True).as_matrix()
-    rot3 =  scipy.spatial.transform.Rotation.from_euler('z', -(90+lon_org), degrees=True).as_matrix()
+def xyz2ll(x, y, z, lat_org, lon_org, alt_org, transformer1, transformer2):
+    x_org, y_org, z_org = transformer1.transform(lon_org, lat_org, alt_org, radians=False)
+    ecef_org = np.array([[x_org, y_org, z_org]]).T
+    rot1 = scipy.spatial.transform.Rotation.from_euler('x', -(90 - lat_org), degrees=True).as_matrix()
+    rot3 = scipy.spatial.transform.Rotation.from_euler('z', -(90 + lon_org), degrees=True).as_matrix()
     rotMatrix = rot1.dot(rot3)
-
-    # transform ENU coords to ECEF by rotating
-    ecefDelta = rotMatrix.T.dot(np.stack([x,y,np.zeros_like(x)],axis=-1).T)
-    # add offset of all corrds on tangent plane to get all points in ECEF
-    ecef = ecefDelta+ecef_org
-    # transform to geodetic coordinates
-    lon, lat, alt = transformer2.transform( ecef[0,:],ecef[1,:],ecef[2,:],radians=False)
-    # only return lat, lon since we're interested in points on Earth. 
-    # N.B. this amounts to doing an inverse stereographic projection from ENU to lat, lon so shouldn't be used to directly back calculate lat, lon from tangent plane coords
-    # this is instead achieved by binning the data's lat/long variables onto the grid in the same way as is done for the variable of interest
+    ecefDelta = rotMatrix.T.dot(np.stack([x, y, np.zeros_like(x)], axis=-1).T)
+    ecef = ecefDelta + ecef_org
+    lon, lat, alt = transformer2.transform(ecef[0, :], ecef[1, :], ecef[2, :], radians=False)
     return lat, lon
 
+def ll2xyz(lat, lon, alt, lat_org, lon_org, alt_org, transformer, rot_matrix=None, ecef_origin=None):
+    """Convert lat/lon to ENU coordinates. Accepts pre-computed rot_matrix and ecef_origin
+    to skip Euler reconstruction when called in a tight loop."""
+    x, y, z = transformer.transform(lon, lat, np.zeros_like(lon), radians=False)
 
-# convert lat, lon to ECEF coords
-def ll2xyz(lat, lon, alt, lat_org, lon_org, alt_org, transformer):
+    if ecef_origin is not None:
+        x_org, y_org, z_org = ecef_origin[0], ecef_origin[1], ecef_origin[2]
+    else:
+        x_org, y_org, z_org = transformer.transform(lon_org, lat_org, alt_org, radians=False)
 
-    # transform geodetic coords to ECEF (https://en.wikipedia.org/wiki/Earth-centered,_Earth-fixed_coordinate_system)
-    x, y, z = transformer.transform( lon,lat, np.zeros_like(lon),radians=False)
-    x_org, y_org, z_org = transformer.transform( lon_org,lat_org,  alt_org,radians=False)
-    # define position of all points relative to origin of local tangent plane
-    vec=np.array([[ x-x_org, y-y_org, z-z_org]]).T
+    vec = np.array([[x - x_org, y - y_org, z - z_org]]).T
 
-    # define 3D rotation required to transform between ECEF and ENU coordinates (https://gssc.esa.int/navipedia/index.php/Transformations_between_ECEF_and_ENU_coordinates)
-    rot1 =  scipy.spatial.transform.Rotation.from_euler('x', -(90-lat_org), degrees=True).as_matrix()
-    rot3 =  scipy.spatial.transform.Rotation.from_euler('z', -(90+lon_org), degrees=True).as_matrix()
-    rotMatrix = rot1.dot(rot3)    
+    if rot_matrix is not None:
+        rotMatrix = rot_matrix
+    else:
+        rot1 = scipy.spatial.transform.Rotation.from_euler('x', -(90 - lat_org), degrees=True).as_matrix()
+        rot3 = scipy.spatial.transform.Rotation.from_euler('z', -(90 + lon_org), degrees=True).as_matrix()
+        rotMatrix = rot1.dot(rot3)
 
-    # rotate ECEF coordinates to ENU
     enu = rotMatrix.dot(vec)
-    X = enu.T[0,:,0]
-    Y = enu.T[0,:,1]
-    Z = enu.T[0,:,2]
+    X = enu.T[0, :, 0]
+    Y = enu.T[0, :, 1]
+    Z = enu.T[0, :, 2]
     return X, Y, Z
 
-# generate coords for points on a square with prescribed side length and center
 def box(x_bounds, y_bounds, refinement=100):
-    xs = np.zeros(int(4*refinement))
-    ys = np.zeros(int(4*refinement))
-    
+    xs = np.zeros(int(4 * refinement))
+    ys = np.zeros(int(4 * refinement))
     xs[:refinement] = np.linspace(x_bounds[0], x_bounds[-1], num=refinement)
     ys[:refinement] = np.linspace(y_bounds[0], y_bounds[0], num=refinement)
-                
-    xs[refinement:2*refinement] = np.linspace(x_bounds[-1], x_bounds[-1], num=refinement)
-    ys[refinement:2*refinement] = np.linspace(y_bounds[0], y_bounds[-1], num=refinement)
-                
-    xs[2*refinement:3*refinement] = np.linspace(x_bounds[-1], x_bounds[0], num=refinement)
-    ys[2*refinement:3*refinement] = np.linspace(y_bounds[-1], y_bounds[-1], num=refinement)
-    
-    xs[3*refinement:] = np.linspace(x_bounds[0], x_bounds[0], num=refinement)
-    ys[3*refinement:] = np.linspace(y_bounds[-1], y_bounds[0], num=refinement)
-    
+    xs[refinement:2 * refinement] = np.linspace(x_bounds[-1], x_bounds[-1], num=refinement)
+    ys[refinement:2 * refinement] = np.linspace(y_bounds[0], y_bounds[-1], num=refinement)
+    xs[2 * refinement:3 * refinement] = np.linspace(x_bounds[-1], x_bounds[0], num=refinement)
+    ys[2 * refinement:3 * refinement] = np.linspace(y_bounds[-1], y_bounds[-1], num=refinement)
+    xs[3 * refinement:] = np.linspace(x_bounds[0], x_bounds[0], num=refinement)
+    ys[3 * refinement:] = np.linspace(y_bounds[-1], y_bounds[0], num=refinement)
     return xs, ys
 
-# bin average high res MUR L4 SST (MW+IR observations)
-def grid_sst_hr(data_sst_hr, n_t, n, L_x, L_y, lon0, lat0, coord_grid):
-    ds = data_sst_hr
-    
-    lon_grid = coord_grid[:,:,0].ravel()
-    lat_grid = coord_grid[:,:,1].ravel()
-    lat_max = np.max(lat_grid)+0.1
-    lat_min = np.min(lat_grid)-0.1
-
-    
-    ds = ds.sel(lat=slice(lat_min,lat_max), drop = True)
-    
-    if ((np.size(lon_grid[lon_grid>175])>0) and (np.size(lon_grid[lon_grid<-175])>0)):
-        long_max_unshifted = np.max(lon_grid[lon_grid<0]) + 0.1
-        long_min_unshifted = np.min(lon_grid[lon_grid>0]) - 0.1
-        
-    else:
-        long_max_unshifted = np.max(lon_grid) + 0.1
-        long_min_unshifted = np.min(lon_grid) - 0.1
- 
-    if long_max_unshifted>long_min_unshifted:
-        ds = ds.isel(lon = (ds.lon < long_max_unshifted) & (ds.lon > long_min_unshifted),drop = True)
-    else:
-        ds1 = ds.isel(lon = (ds.lon < long_max_unshifted),drop=True)
-        ds2 = ds.isel(lon = (ds.lon > long_min_unshifted),drop=True)
-        ds = xr.concat([ds1,ds2],'lon')
-        
-    ds = ds.load()
-    ds['lon'] = (ds['lon']-lon0+180)%360-180
-
-    lon = np.array(ds['lon'])
-    lat = np.array(ds['lat'])
-    lon, lat = np.meshgrid(lon, lat)
-
-    lon = lon.flatten()
-    lat = lat.flatten()
-    sst_list = []
-    for t in range(n_t):
-        sst = np.array(ds['analysed_sst'].isel(time=t)).ravel()
-        sst[np.isnan(sst)] = 0
-        sst_list.append(sst)
-    
-    # calculate ENU coords of data on tangent plane
-    x,y,_ = ll2xyz(lat, lon, 0, lat0, 0, 0, transformer_ll2xyz)
-    sst_grids, _,_,_ = stats.binned_statistic_2d(x, y, sst_list, statistic = 'mean', bins=n, range = [[-L_x/2, L_x/2],[-L_y/2, L_y/2]])
-    for i,sst_grid in enumerate(sst_grids):
-        sst_grid = np.rot90(sst_grid)
-        sst_grid[sst_grid<273] = 0
-        sst_grids[i] = sst_grid
-    
-    return sst_grids
+# ---------- SSH loading from raw CMEMS files (used by create_cache.py) ----------
 
 def load_multisat_ssh_single_day(ssh_files, satellite_names):
     datasets = []
@@ -166,337 +100,382 @@ def load_multisat_ssh_single_day(ssh_files, satellite_names):
         sat_var = xr.DataArray(np.full(ds.sizes['time'], sat_name, dtype=object), dims=['time'])
         ds = ds.assign(satellite=sat_var)
         datasets.append(ds)
-    
-    ds_merged = xr.concat(datasets, dim='time')
-    return ds_merged
+    return xr.concat(datasets, dim='time')
 
 def get_next_dir_level(dir_name, file_paths):
-    return [path.split(dir_name + os.sep, 1)[-1].split(os.sep, 1)[0] for path in file_paths if dir_name + os.sep in path]
+    return [path.split(dir_name + os.sep, 1)[-1].split(os.sep, 1)[0]
+            for path in file_paths if dir_name + os.sep in path]
 
-def load_ssh_by_date_range(start_date, end_date, dir_name = 'input_data/cmems_sla'):
+def load_ssh_by_date_range(start_date, end_date, dir_name='input_data/cmems_sla'):
     ssh_files_total = GetListOfFiles(dir_name)
     n_days = (end_date - start_date).days
-    dates = [start_date + datetime.timedelta(days = t) for t in range(n_days)]
+    dates = [start_date + datetime.timedelta(days=t) for t in range(n_days)]
     ssh_datasets = []
-    print('Number of days to load: '+str(n_days))
+    print('Number of days to load: ' + str(n_days))
     for t in tqdm(range(n_days), desc="SSH loading progress"):
-        
-        ssh_files = [f for f in ssh_files_total if datetime.date(int(f[-20:-16]), int(f[-16:-14]), int(f[-14:-12])) == dates[t]]
+        ssh_files = [f for f in ssh_files_total
+                     if datetime.date(int(f[-20:-16]), int(f[-16:-14]), int(f[-14:-12])) == dates[t]]
         sat_names = get_next_dir_level(dir_name, ssh_files)
-
-        if len(ssh_files)>0:
+        if len(ssh_files) > 0:
             ds = load_multisat_ssh_single_day(ssh_files, sat_names)
             ssh_datasets.append(ds)
-
     return dates, ssh_datasets
 
-# empty a directory of any files
-def empty_directory(directory):
-    if os.path.exists(directory) and os.path.isdir(directory):
-        for item in os.listdir(directory):
-            item_path = os.path.join(directory, item)
-            if os.path.isfile(item_path):
-                os.remove(item_path)
+# ---------- SSH gridding ----------
 
+def fast_bin_2d(x, y, values, n, x_range, y_range):
+    """Mean-binned statistic on a regular 2D grid.
 
-def convert_np_cache_to_hdf5(np_dir = 'input_data/sla_cache_2024-03-01_2024-04-01', hdf5_path = 'input_data/sla_cache_2024-03-01_2024-04-01.h5',delete_np=False):
-    with h5py.File(hdf5_path, 'w') as h5f:
-        for fname in tqdm(os.listdir(np_dir), desc = 'Converting .npy cache to single hdf5 file:'):
-            if fname.endswith('.npy') and not fname.endswith('_sats.npy'):
-                base, _ = os.path.splitext(fname)
-                group = h5f.require_group(base)
-                data = np.load(os.path.join(np_dir, fname), allow_pickle=False)
-                group.create_dataset('data', data=data, compression="gzip")
+    Drop-in replacement for scipy.stats.binned_statistic_2d using digitize + bincount.
+    Returns (n, n) with x as first axis, y as second (same convention as scipy).
+    """
+    if x.size == 0:
+        return np.full((n, n), np.nan)
 
-                sats_fname = base + '_sats.npy'
-                sats_path = os.path.join(np_dir, sats_fname)
-                if os.path.exists(sats_path):
-                    sats_data = np.load(sats_path, allow_pickle=True)
-                    group.create_dataset('sats', data=sats_data, compression="gzip")
-    if delete_np:
-        print('deleting .npy cache at: '+np_dir)
-        shutil.rmtree(np_dir)
-        
-def find_covering_cache(start_date, end_date, chunk_dir):
-    cache_files = [f for f in os.listdir(chunk_dir) if f.endswith('.h5')]
-    
-    best_match = None
-    min_days_offset = None
-    final_t_length = None
-    
-    for cache_file in cache_files:
-        match = re.search(r'_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})', cache_file)
-        if match:
-            cache_start = datetime.datetime.strptime(match.group(1), "%Y-%m-%d").date()
-            cache_end = datetime.datetime.strptime(match.group(2), "%Y-%m-%d").date()
-            
-            if cache_start <= start_date and cache_end >= end_date:
-                days_offset = (start_date - cache_start).days
-                days_length = (cache_end - cache_start).days
-                
-                if best_match is None or min_days_offset is None or days_offset < min_days_offset:
-                    best_match = cache_file
-                    min_days_offset = days_offset
-                    final_t_length = days_length
-    
-    return best_match, min_days_offset, final_t_length
+    x_min, x_max = x_range
+    y_min, y_max = y_range
 
-def create_sla_chunks(start_date, end_date, chunk_dir = 'input_data/sla_cache', time_bin_size = 10, lon_bin_size = 10, lat_bin_size = 10, n_t = 30, cmems_dir = 'input_data/cmems_sla',force_recache=False):
-    
-    existing_cache, days_offset, t_length = find_covering_cache(start_date, end_date, chunk_dir)
-    
-    if existing_cache is not None and not force_recache:
-        print(f"Using existing cache: {existing_cache}, offset by {days_offset} days")
-        return chunk_dir + '/' + existing_cache, days_offset, t_length + n_t
-    
-    output_dir = chunk_dir + '/sla_cache_' + str(start_date) + '_' + str(end_date)
-    print(f"Creating new cache: {output_dir}")
-    # if (os.path.exists(output_dir+'.h5') and force_recache) or (not os.path.exists(output_dir+'.h5')):
-    
-    dates, ssh_datasets = load_ssh_by_date_range(start_date - datetime.timedelta(days = n_t//2), end_date + datetime.timedelta(days = n_t//2), dir_name = cmems_dir)
-    ds = xr.concat(ssh_datasets, dim = 'time')
+    x_edges = np.linspace(x_min, x_max, n + 1)
+    y_edges = np.linspace(y_min, y_max, n + 1)
 
-    del ssh_datasets
+    xi = np.digitize(x, x_edges) - 1
+    yi = np.digitize(y, y_edges) - 1
 
-    ds['day_idx'] = (ds['time'] - np.datetime64(start_date - datetime.timedelta(days = n_t//2), 'ns'))// np.timedelta64(1, 'D')
-    time_vals = ds['day_idx'].values
-    time_bins = np.arange(0,365,time_bin_size)
-    lat_bins = np.arange(-90, 90, lat_bin_size)
-    lon_bins = np.arange(-180, 180, lon_bin_size)
+    valid = (xi >= 0) & (xi < n) & (yi >= 0) & (yi < n)
+    xi, yi = xi[valid], yi[valid]
+    vals = values[valid].astype(np.float64)
 
-    # Compute bin indices
-    time_idx = np.digitize(time_vals, time_bins) - 1
-    lat_vals = ds['latitude'].values.ravel()
-    lon_vals = ds['longitude'].values.ravel()
-    lon_vals = ((lon_vals + 180) % 360) - 180 # handle either longitude input format
-    lat_idx = np.digitize(lat_vals, lat_bins) - 1
-    lon_idx = np.digitize(lon_vals, lon_bins) - 1
+    linear_idx = xi * n + yi
+    sum_grid = np.bincount(linear_idx, weights=vals, minlength=n * n).reshape(n, n)
+    cnt_grid = np.bincount(linear_idx, minlength=n * n).reshape(n, n)
 
-    df = pd.DataFrame({
-        'time_bin': time_idx,
-        'lat_bin': lat_idx,
-        'lon_bin': lon_idx
-    })
+    with np.errstate(invalid='ignore'):
+        mean_grid = np.where(cnt_grid > 0, sum_grid / cnt_grid, np.nan)
 
-    # group data indices by bin
-    grouped = df.groupby(['time_bin', 'lat_bin', 'lon_bin']).indices
+    return mean_grid
 
-    os.makedirs(output_dir, exist_ok=True)
-    #empty any existing files left over from previous cache under same name
-    empty_directory(output_dir)
+def bin_ssh(data, L_x=960e3, L_y=960e3, n=128, n_t=30, filtered=False):
+    ssh_grid = np.zeros((n_t, n, n))
+    data[np.isnan(data)] = 0
 
-    for (t_bin, lat_bin, lon_bin), idx in tqdm(grouped.items(), desc="Saving chunked SSH into cache at "+output_dir):
-        # Extract data efficiently using precomputed indices
-        lat_subset = lat_vals[idx]
-        lon_subset = lon_vals[idx]
-        time_subset = time_vals[idx]
-        sla_unfiltered_subset = ds['sla_unfiltered'].values[idx]
-        sla_filtered_subset = ds['sla_filtered'].values[idx]
-        sat_subset = ds['satellite'].values[idx]
+    for t in range(n_t):
+        mask = (data[:, 3] == t)
+        x, y, ssh = data[mask, 0], data[mask, 1], data[mask, 2]
+        input_grid = fast_bin_2d(x, y, ssh, n=n,
+                                 x_range=[-L_x / 2, L_x / 2],
+                                 y_range=[-L_y / 2, L_y / 2])
+        input_grid = np.rot90(input_grid)
+        input_grid[np.isnan(input_grid)] = 0
+        ssh_grid[t, :, :] = input_grid
 
-        # Save data
-        filename = os.path.join(output_dir, f'bin_t{t_bin}_lat{lat_bin}_lon{lon_bin}.npy')
-        np.save(filename, np.column_stack((lat_subset, lon_subset, time_subset, sla_unfiltered_subset, sla_filtered_subset)))
-        np.save(filename[:-4] + '_sats.npy', sat_subset)
+    return ssh_grid
 
+# ---------- Pre-computation (one-time at dataset init) ----------
 
-    convert_np_cache_to_hdf5(np_dir = output_dir, hdf5_path = output_dir+'.h5',delete_np=True)
-    
-    return output_dir + '.h5', None, None
+def precompute_region_rotation_matrices(coord_grids, n=128):
+    """Pre-compute ENU rotation matrices and ECEF origins for all regions.
 
+    Returns:
+        rot_matrices:  (N_regions, 3, 3) float64
+        ecef_origins:  (N_regions, 3)    float64
+    """
+    N_regions = coord_grids.shape[0]
+    rot_matrices = np.zeros((N_regions, 3, 3), dtype=np.float64)
+    ecef_origins = np.zeros((N_regions, 3), dtype=np.float64)
 
-def load_query_data_h5(query_time_start, query_time_end, query_lat_min, query_lat_max, 
-                    query_lon_min, query_lon_max, time_bins, lat_bins, lon_bins, h5f):
-    # Compute bin edges and indices just as before
-    time_bin_edges = np.append(time_bins, np.inf)
-    lat_bin_edges  = np.append(lat_bins, np.inf)
-    lon_bin_edges  = np.append(lon_bins, np.inf)
-    
-    q_time_idx = np.where((time_bin_edges[:-1] <= query_time_end) & (time_bin_edges[1:] > query_time_start))[0]
-    q_lat_idx  = np.where((lat_bin_edges[:-1] <= query_lat_max) & (lat_bin_edges[1:] > query_lat_min))[0]
-    q_lon_idx  = np.where((lon_bin_edges[:-1] <= query_lon_max) & (lon_bin_edges[1:] > query_lon_min))[0]
+    mid = n // 2
+    for r in range(N_regions):
+        lon0 = 0.25 * (coord_grids[r, mid - 1, mid - 1, 0] + coord_grids[r, mid - 1, mid, 0] +
+                       coord_grids[r, mid, mid - 1, 0] + coord_grids[r, mid, mid, 0])
+        lat0 = 0.25 * (coord_grids[r, mid - 1, mid - 1, 1] + coord_grids[r, mid - 1, mid, 1] +
+                       coord_grids[r, mid, mid - 1, 1] + coord_grids[r, mid, mid, 1])
+
+        x_org, y_org, z_org = transformer_ll2xyz.transform(lon0, lat0, 0.0, radians=False)
+        ecef_origins[r] = [x_org, y_org, z_org]
+
+        rot1 = scipy.spatial.transform.Rotation.from_euler('x', -(90 - lat0), degrees=True).as_matrix()
+        rot3 = scipy.spatial.transform.Rotation.from_euler('z', -(90 + lon0), degrees=True).as_matrix()
+        rot_matrices[r] = rot1.dot(rot3)
+
+    return rot_matrices, ecef_origins
+
+def precompute_sst_bilinear_weights(coord_grids, sst_lat, sst_lon, n=128):
+    """Pre-compute bilinear interpolation weights from SST grid to all ENU patches.
+
+    Args:
+        coord_grids: (N_regions, n, n, 2) — lon/lat of each output pixel
+        sst_lat:     (N_lat,) 1D latitude coordinate of the SST grid (ascending)
+        sst_lon:     (N_lon,) 1D longitude coordinate of the SST grid (ascending)
+
+    Returns:
+        bilinear_idx: (N_regions, n*n, 4) int32, flat indices into flattened (N_lat, N_lon) SST
+        bilinear_w:   (N_regions, n*n, 4) float32, weights summing to 1
+    """
+    N_regions = coord_grids.shape[0]
+    N_pix = n * n
+    N_lat = len(sst_lat)
+    N_lon = len(sst_lon)
+
+    bilinear_idx = np.zeros((N_regions, N_pix, 4), dtype=np.int32)
+    bilinear_w = np.zeros((N_regions, N_pix, 4), dtype=np.float32)
+
+    dlat = float(sst_lat[1] - sst_lat[0])
+    dlon = float(sst_lon[1] - sst_lon[0])
+    lat0_sst = float(sst_lat[0])
+    lon0_sst = float(sst_lon[0])
+    lon_range = N_lon * dlon
+
+    for r in tqdm(range(N_regions), desc="Pre-computing SST bilinear weights"):
+        lons = coord_grids[r, :, :, 0].ravel().astype(np.float64)
+        lats = coord_grids[r, :, :, 1].ravel().astype(np.float64)
+
+        i_f = (lats - lat0_sst) / dlat
+        j_f = ((lons - lon0_sst) % lon_range) / dlon
+
+        i0 = np.floor(i_f).astype(np.int32)
+        j0 = np.floor(j_f).astype(np.int32)
+        i1 = i0 + 1
+        j1 = j0 + 1
+
+        di = (i_f - i0).astype(np.float32)
+        dj = (j_f - j0).astype(np.float32)
+
+        i0 = np.clip(i0, 0, N_lat - 1)
+        i1 = np.clip(i1, 0, N_lat - 1)
+        j0 = j0 % N_lon
+        j1 = j1 % N_lon
+
+        bilinear_idx[r, :, 0] = i0 * N_lon + j0
+        bilinear_idx[r, :, 1] = i0 * N_lon + j1
+        bilinear_idx[r, :, 2] = i1 * N_lon + j0
+        bilinear_idx[r, :, 3] = i1 * N_lon + j1
+
+        bilinear_w[r, :, 0] = (1 - di) * (1 - dj)
+        bilinear_w[r, :, 1] = (1 - di) * dj
+        bilinear_w[r, :, 2] = di * (1 - dj)
+        bilinear_w[r, :, 3] = di * dj
+
+    return bilinear_idx, bilinear_w
+
+def apply_sst_bilinear(sst_slice, bilinear_idx_r, bilinear_w_r, n=128):
+    """Apply pre-computed bilinear weights to extract an SST patch from a pre-loaded array.
+
+    Args:
+        sst_slice:       (N_t, N_lat, N_lon) float16/float32 — pre-loaded SST, 0 = no-data
+        bilinear_idx_r:  (n*n, 4) int32 — flat indices into (N_lat, N_lon) for one region
+        bilinear_w_r:    (n*n, 4) float32 — bilinear weights for that region
+
+    Returns:
+        sst_patch: (N_t, n, n) float32, 0 where no data
+    """
+    N_t = sst_slice.shape[0]
+    sst_flat = sst_slice.reshape(N_t, -1).astype(np.float32)  # (N_t, N_lat*N_lon)
+
+    # sst_flat[:, bilinear_idx_r] → (N_t, N_pix, 4), then weighted sum → (N_t, N_pix)
+    sst_patch = (sst_flat[:, bilinear_idx_r] * bilinear_w_r[np.newaxis]).sum(axis=-1)
+
+    # Match original masking: pixels below freezing are fill (land/ice) → zero
+    sst_patch[sst_patch < 273.0] = 0.0
+
+    return sst_patch.reshape(N_t, n, n)
+
+# ---------- In-RAM SSH query ----------
+
+def load_query_data_np(query_t_start, query_t_end,
+                       query_lat_min, query_lat_max,
+                       query_lon_min, query_lon_max,
+                       ssh_data, ssh_sats, ssh_idx,
+                       t_bin_size=10, lat_bin_size=10, lon_bin_size=10,
+                       t_offset=0):
+    """Query flat in-RAM SSH array for observations within a spatiotemporal bounding box.
+
+    Args:
+        query_t_start/end:   absolute day indices (days since EPOCH)
+        query_lat/lon_*:     geographic bounding box (degrees)
+        ssh_data:            (N_obs, 5) float32 sorted by (t_bin, lat_bin, lon_bin)
+                             columns: lat, lon, day_abs, sla_unfiltered, sla_filtered
+        ssh_sats:            (N_obs,) int8 satellite IDs
+        ssh_idx:             (n_t_bins, n_lat_bins, n_lon_bins, 2) int32 row start/end per bin
+        t_offset:            absolute day of the first element of the t-bin axis in ssh_idx
+    """
+    n_t_bins, n_lat_bins, n_lon_bins = ssh_idx.shape[:3]
+
+    t0_bin = max(0, int((query_t_start - t_offset) // t_bin_size))
+    t1_bin = min(n_t_bins - 1, int((query_t_end - t_offset) // t_bin_size))
+
+    lat0_bin = max(0, int((query_lat_min + 90) // lat_bin_size))
+    lat1_bin = min(n_lat_bins - 1, int((query_lat_max + 90) // lat_bin_size))
+
+    if t0_bin > t1_bin or lat0_bin > lat1_bin:
+        return np.empty((0, 5), dtype=np.float32), np.empty((0,), dtype=np.int8)
+
+    # Longitude — handle dateline crossing
+    if query_lon_min <= query_lon_max:
+        lon0_bin = max(0, int((query_lon_min + 180) // lon_bin_size))
+        lon1_bin = min(n_lon_bins - 1, int((query_lon_max + 180) // lon_bin_size))
+        lon_ranges = [(lon0_bin, lon1_bin)]
+    else:
+        # wraps across ±180
+        lon_a0 = max(0, int((query_lon_min + 180) // lon_bin_size))
+        lon_a1 = n_lon_bins - 1
+        lon_b0 = 0
+        lon_b1 = min(n_lon_bins - 1, int((query_lon_max + 180) // lon_bin_size))
+        lon_ranges = [(lon_a0, lon_a1), (lon_b0, lon_b1)]
 
     data_list = []
     sat_list = []
-    
 
-    # Loop over the bins that intersect the query bounds.
-    for t in q_time_idx:
-        for lat_i in q_lat_idx:
-            for lon_i in q_lon_idx:
-                group_name = f'bin_t{t}_lat{lat_i}_lon{lon_i}'
-                if group_name in h5f:
-                    group = h5f[group_name]
-                    # Load main data and satellite data from the group.
-                    bin_data = group['data'][()]
-                    sat_data = group['sats'][()]
-                    sat_data = np.char.mod('%s', sat_data)
-                    # sat_data = sat_data.astype(str)
-                    data_list.append(bin_data)
-                    sat_list.append(sat_data)
-    
-    data = np.concatenate(data_list) if data_list else np.empty((0,))
-    sats = np.concatenate(sat_list) if sat_list else np.empty((0,))
-    return data, sats
+    for t_b in range(t0_bin, t1_bin + 1):
+        for lat_b in range(lat0_bin, lat1_bin + 1):
+            for lon_lo, lon_hi in lon_ranges:
+                for lon_b in range(lon_lo, lon_hi + 1):
+                    r0, r1 = ssh_idx[t_b, lat_b, lon_b]
+                    if r1 > r0:
+                        data_list.append(ssh_data[r0:r1])
+                        sat_list.append(ssh_sats[r0:r1])
 
-def extract_tracks_h5(t_mid, lon0, lat0, coord_grid, transformer_ll2xyz, time_bins, lon_bins, lat_bins, h5f, n_t = 30, L_x=960e3, L_y=960e3, filtered=False):
-    lon_grid = coord_grid[:,:,0]
-    lat_grid = coord_grid[:,:,1]
-    lat_max = np.max(lat_grid)+0.1
-    lat_min = np.min(lat_grid)-0.1
-    lon_max = np.max(lon_grid[:,-1]) + 0.1 #handles wrap around dateline
-    lon_min = np.min(lon_grid[:,0]) - 0.1 #handles wrap around dateline
+    if data_list:
+        return np.concatenate(data_list, axis=0), np.concatenate(sat_list, axis=0)
+    return np.empty((0, 5), dtype=np.float32), np.empty((0,), dtype=np.int8)
 
-    
-    if lon_min < lon_max:
-        data, sat = load_query_data_h5(query_time_start = t_mid - n_t//2,
-                                     query_time_end = t_mid + n_t//2,
-                                     query_lat_min = lat_min,
-                                     query_lat_max = lat_max,
-                                     query_lon_min = lon_min,
-                                     query_lon_max = lon_max,
-                                     time_bins = time_bins,
-                                     lat_bins = lat_bins,
-                                     lon_bins = lon_bins,
-                                     h5f = h5f
-                                    )
-    else: # wrap over dateline
-        data_l, sat_l = load_query_data_h5(query_time_start = t_mid - n_t//2,
-                                     query_time_end = t_mid + n_t//2,
-                                     query_lat_min = lat_min,
-                                     query_lat_max = lat_max,
-                                     query_lon_min = lon_min,
-                                     query_lon_max = 180,
-                                     time_bins = time_bins,
-                                     lat_bins = lat_bins,
-                                     lon_bins = lon_bins,
-                                     h5f = h5f
-                                    )
-        data_r, sat_r = load_query_data_h5(query_time_start = t_mid - n_t//2,
-                                     query_time_end = t_mid + n_t//2,
-                                     query_lat_min = lat_min,
-                                     query_lat_max = lat_max,
-                                     query_lon_min = -180,
-                                     query_lon_max = lon_max,
-                                     time_bins = time_bins,
-                                     lat_bins = lat_bins,
-                                     lon_bins = lon_bins,
-                                     h5f = h5f
-                                    )
+def extract_tracks_np(t_abs_mid, lon0, lat0, coord_grid, rot_matrix, ecef_origin,
+                      ssh_data, ssh_sats, ssh_satnames, ssh_idx,
+                      t_offset=0,
+                      t_bin_size=10, lat_bin_size=10, lon_bin_size=10,
+                      n_t=30, L_x=960e3, L_y=960e3, filtered=False):
+    """Extract SSH tracks for a given region and time window using in-RAM arrays.
 
-        # handle case where one side of dateline is empty
-        if (len(data_l.shape) == 2) and  (len(data_r.shape) == 2):
-            data, sat = np.concatenate((data_l, data_r)), np.concatenate((sat_l, sat_r))
-        else:
-            if (len(data_l.shape) == 1) and (len(data_r.shape) == 2):
-                data, sat = data_r, sat_r
-            elif (len(data_r.shape) == 1) and (len(data_l.shape) == 2):
-                data, sat = data_l, sat_l
-            else:
-                data, sat = np.empty((0,)), np.empty((0,))
-            
-                
-            
-        
-    
-    if np.size(data)>0:
-        latitude = data[:,0]
-        longitude = data[:,1]
-        day = data[:,2] - (t_mid - n_t//2)
+    Returns:
+        data:     (N, 4) float32  columns: x_enu, y_enu, sla, day_relative
+        sats:     (N,)   str      satellite names
+    Returns (zeros(1,4), None) if no data found.
+    """
+    lon_grid = coord_grid[:, :, 0]
+    lat_grid = coord_grid[:, :, 1]
+    lat_max = np.max(lat_grid) + 0.1
+    lat_min = np.min(lat_grid) - 0.1
+    lon_max = np.max(lon_grid[:, -1]) + 0.1
+    lon_min = np.min(lon_grid[:, 0]) - 0.1
 
-        if filtered:
-            sla = data[:,4]
-        else:
-            sla = data[:,3]
+    t_abs_start = t_abs_mid - n_t // 2
+    t_abs_end = t_abs_mid + n_t // 2
 
-        mask = (day >= 0) & (day<n_t)
+    data, sats_int = load_query_data_np(
+        query_t_start=t_abs_start,
+        query_t_end=t_abs_end,
+        query_lat_min=lat_min,
+        query_lat_max=lat_max,
+        query_lon_min=lon_min,
+        query_lon_max=lon_max,
+        ssh_data=ssh_data,
+        ssh_sats=ssh_sats,
+        ssh_idx=ssh_idx,
+        t_bin_size=t_bin_size,
+        lat_bin_size=lat_bin_size,
+        lon_bin_size=lon_bin_size,
+        t_offset=t_offset,
+    )
 
-        longitude, latitude, sla, day, sat = longitude[mask], latitude[mask], sla[mask], day[mask], sat[mask]
+    if data.shape[0] == 0:
+        return np.zeros((1, 4), dtype=np.float32), None
 
-        # Normalize longitude
-        longitude = (longitude - lon0 + 180) % 360 - 180
+    lat = data[:, 0]
+    lon = data[:, 1]
+    day_abs = data[:, 2]
+    sla = data[:, 4] if filtered else data[:, 3]
 
-        # Calculate ENU coordinates
-        x, y, z = ll2xyz(latitude, longitude, 0, lat0, 0, 0, transformer_ll2xyz)
+    day = (day_abs - t_abs_start).astype(np.float32)
+    valid = (day >= 0) & (day < n_t)
+    lon, lat, sla, day, sats_int = lon[valid], lat[valid], sla[valid], day[valid], sats_int[valid]
 
-        mask = (z > -1e6) & (-L_x / 2 < x) & (x < L_x / 2) & (-L_y / 2 < y) & (y < L_y / 2)
+    if lon.size == 0:
+        return np.zeros((1, 4), dtype=np.float32), None
 
-        return np.column_stack((x[mask], y[mask], sla[mask], day[mask])), sat[mask]
-    else:
-        return np.zeros((1,4)), None
+    lon = (lon - lon0 + 180) % 360 - 180
 
+    x, y, z = ll2xyz(lat, lon, 0, lat0, 0, 0, transformer_ll2xyz,
+                     rot_matrix=rot_matrix, ecef_origin=ecef_origin)
 
-def bin_ssh(data, L_x = 960e3, L_y = 960e3, n = 128, n_t = 30, filtered = False):
-    ssh_grid = np.zeros((n_t,n,n))
-    data[np.isnan(data)] = 0
-    
-    for t in range(n_t):
-        mask = (data[:,3] == t)
-        x, y, ssh = data[mask, 0], data[mask, 1], data[mask, 2]
-        
-        input_grid, _,_,_ = stats.binned_statistic_2d(x,y,ssh, statistic = 'mean', bins=n, range = [[-L_x/2, L_x/2],[-L_y/2, L_y/2]])
-        input_grid = np.rot90(input_grid)
-        input_grid[np.isnan(input_grid)] = 0
+    in_patch = (z > -1e6) & (-L_x / 2 < x) & (x < L_x / 2) & (-L_y / 2 < y) & (y < L_y / 2)
+    x, y, sla, day, sats_int = x[in_patch], y[in_patch], sla[in_patch], day[in_patch], sats_int[in_patch]
 
-        ssh_grid[t,:,:] = input_grid
-        
-    return ssh_grid
+    if x.size == 0:
+        return np.zeros((1, 4), dtype=np.float32), None
 
+    sats = np.array([ssh_satnames[s] for s in sats_int])
+    return np.column_stack((x, y, sla, day)).astype(np.float32), sats
 
-def get_ssh_h5(r,t,coord_grid,transformer_ll2xyz, time_bins, lon_bins, lat_bins, h5f, n_t = 30, n = 128, L_x = 960e3, L_y = 960e3, leave_out_altimeters=True, withhold_sat='random', filtered=False):
+def get_ssh_np(r, t_abs, coord_grids, rot_matrices, ecef_origins,
+               ssh_data, ssh_sats, ssh_satnames, ssh_idx,
+               t_offset=0,
+               t_bin_size=10, lat_bin_size=10, lon_bin_size=10,
+               n_t=30, n=128, L_x=960e3, L_y=960e3,
+               leave_out_altimeters=True, withhold_sat='random', filtered=False):
+    """Get SSH input grid and withheld ground-truth tracks for one region and time step.
 
-    mid = n//2
-    neighbors = [(r, mid-1, mid-1), (r, mid-1, mid), (r, mid, mid-1), (r, mid, mid)]
-    lon0 = np.mean([coord_grid[neighbor[0], neighbor[1], neighbor[2], 0] for neighbor in neighbors])
-    lat0 = np.mean([coord_grid[neighbor[0], neighbor[1], neighbor[2], 1] for neighbor in neighbors])
-    
-    d, s = extract_tracks_h5(t_mid = t,
-                          lon0 = lon0,
-                          lat0 = lat0,
-                          coord_grid = coord_grid[r,],
-                          transformer_ll2xyz = transformer_ll2xyz, 
-                          time_bins=time_bins, 
-                          lon_bins=lon_bins, 
-                          lat_bins=lat_bins,
-                          n_t = n_t,
-                          L_x = L_x,
-                          L_y = L_y,
-                          filtered = filtered,
-                          h5f = h5f
-                         )
-    
-    if d.shape[0]>1:
-    
+    Args:
+        r:       region index
+        t_abs:   absolute day index (days since EPOCH = 1993-01-01)
+
+    Returns:
+        ssh_grid:  (n_t, n, n) float32
+        out_data:  (n_t, max_pts, 3) float32 or None
+    """
+    mid = n // 2
+    lon0 = 0.25 * (coord_grids[r, mid - 1, mid - 1, 0] + coord_grids[r, mid - 1, mid, 0] +
+                   coord_grids[r, mid, mid - 1, 0] + coord_grids[r, mid, mid, 0])
+    lat0 = 0.25 * (coord_grids[r, mid - 1, mid - 1, 1] + coord_grids[r, mid - 1, mid, 1] +
+                   coord_grids[r, mid, mid - 1, 1] + coord_grids[r, mid, mid, 1])
+
+    d, s = extract_tracks_np(
+        t_abs_mid=t_abs,
+        lon0=lon0,
+        lat0=lat0,
+        coord_grid=coord_grids[r],
+        rot_matrix=rot_matrices[r],
+        ecef_origin=ecef_origins[r],
+        ssh_data=ssh_data,
+        ssh_sats=ssh_sats,
+        ssh_satnames=ssh_satnames,
+        ssh_idx=ssh_idx,
+        t_offset=t_offset,
+        t_bin_size=t_bin_size,
+        lat_bin_size=lat_bin_size,
+        lon_bin_size=lon_bin_size,
+        n_t=n_t,
+        L_x=L_x,
+        L_y=L_y,
+        filtered=filtered,
+    )
+
+    if d.shape[0] > 1:
         if leave_out_altimeters:
             sats_all = np.unique(s)
             if withhold_sat == 'random':
-                # randomly select 1 satellite to withhold (e.g. for ground truth during training)
                 withhold = np.random.choice(sats_all)
             else:
-                # specify either 1 sat or list of sats to withhold (e.g. for inference while maintaining independent sat for validation)
                 withhold = withhold_sat
 
-            s = np.array([re.sub(r"^b'(.*)'$", r"\1", x) for x in s.astype(str)])
             mask = (s != withhold) if isinstance(withhold, str) else ~np.isin(s, withhold)
             d_out = d[~mask]
             d, s = d[mask], s[mask]
 
             out_tracks = []
             for t in range(n_t):
-                mask = (d_out[:,3] == t)
-                out_tracks.append(d_out[mask,:])
+                t_mask = (d_out[:, 3] == t)
+                out_tracks.append(d_out[t_mask, :])
 
-            len_max = max([d.shape[0] for d in out_tracks])
-            out_data = np.zeros((n_t,len_max,3))
+            len_max = max(tr.shape[0] for tr in out_tracks) if any(tr.shape[0] > 0 for tr in out_tracks) else 1
+            out_data = np.zeros((n_t, len_max, 3), dtype=np.float32)
             for t in range(n_t):
-                out_data[t,:out_tracks[t].shape[0],] = out_tracks[t][:,:3]
-
+                if out_tracks[t].shape[0] > 0:
+                    out_data[t, :out_tracks[t].shape[0]] = out_tracks[t][:, :3]
         else:
             out_data = None
 
-        ssh_grid = bin_ssh(d, L_x = L_x, L_y = L_y, n = n, n_t = n_t, filtered = filtered)
+        ssh_grid = bin_ssh(d, L_x=L_x, L_y=L_y, n=n, n_t=n_t)
     else:
-        ssh_grid = np.zeros((n_t,n,n))
+        ssh_grid = np.zeros((n_t, n, n), dtype=np.float32)
         out_data = None
-    
+
     return ssh_grid, out_data
