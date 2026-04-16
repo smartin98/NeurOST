@@ -64,17 +64,16 @@ def download_and_coarsen_one_day(args):
         try:
             print(f"[MUR worker {worker_id}] Coarsening {fname}")
             ds_sst = xr.open_dataset(f)
-            zarr_path = os.path.join('input_data', 'mur_coarse_zarrs', str(ds_sst['time'].values[0])[:10].replace('-', '') + '.zarr')
-            if os.path.isdir(zarr_path):
-                print(f"[MUR worker {worker_id}] {zarr_path} already exists; skipping")
+            nc_path = os.path.join('input_data', 'mur_coarse_nc', str(ds_sst['time'].values[0])[:10].replace('-', '') + '.nc')
+            if os.path.exists(nc_path):
+                print(f"[MUR worker {worker_id}] {nc_path} already exists; skipping")
             else:
                 sst = (ds_sst[['analysed_sst', 'sea_ice_fraction']]
                        .load()
                        .astype('float32')
                        .coarsen({'lon': 5, 'lat': 5}, boundary='trim')
                        .mean())
-                sst = sst.chunk({'time': 1, 'lon': 1000, 'lat': 1000})
-                sst.to_zarr(zarr_path)
+                sst.to_netcdf(nc_path)
             ds_sst.close()
         except Exception as e:
             print(f"[MUR worker {worker_id}] Error coarsening {fname}: {e}")
@@ -127,7 +126,7 @@ def main():
 
     # make base dirs
     os.makedirs('input_data/mur_sst_tmp', exist_ok=True)
-    os.makedirs('input_data/mur_coarse_zarrs', exist_ok=True)
+    os.makedirs('input_data/mur_coarse_nc', exist_ok=True)
     os.makedirs('input_data/cmems_sla', exist_ok=True)
 
     # ------------- MUR (process pool) -------------

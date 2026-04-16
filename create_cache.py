@@ -7,7 +7,7 @@ output files already exist.
 Usage:
     python create_cache.py \
         --start 1993-01-01 --end 2024-01-01 \
-        --sst_zarr_dir input_data/mur_coarse_zarrs \
+        --sst_nc_dir input_data/mur_coarse_nc \
         --cmems_sla_dir input_data/cmems_sla \
         --sst_out_dir input_data/sst_cache \
         --sla_out_dir input_data/sla_cache \
@@ -45,7 +45,7 @@ def generate_quarterly_chunks(start_date, end_date):
 
 # ---------- SST cache ----------
 
-def build_sst_chunk(chunk_start, chunk_end, sst_zarr_dir, sst_out_dir, n_t, force):
+def build_sst_chunk(chunk_start, chunk_end, sst_nc_dir, sst_out_dir, n_t, force):
     """Build one SST cache file: (N_days_buf, N_lat, N_lon) float16 numpy array.
 
     Index 0 corresponds to day (chunk_start - n_t//2).
@@ -70,13 +70,13 @@ def build_sst_chunk(chunk_start, chunk_end, sst_zarr_dir, sst_out_dir, n_t, forc
 
     for i in tqdm(range(n_days_buf), desc=f'SST {chunk_start}–{chunk_end}'):
         day = buf_start + datetime.timedelta(days=i)
-        fpath = os.path.join(sst_zarr_dir, day.strftime('%Y%m%d') + '.zarr')
+        fpath = os.path.join(sst_nc_dir, day.strftime('%Y%m%d') + '.nc')
 
-        if not os.path.isdir(fpath):
+        if not os.path.exists(fpath):
             sst_arrays.append(None)
             continue
 
-        ds = xr.open_dataset(fpath, engine='zarr')
+        ds = xr.open_dataset(fpath)
         sst = ds['analysed_sst'].values.squeeze().astype(np.float32)
         sst[np.isnan(sst)] = 0.0
         sst_arrays.append(sst.astype(np.float16))
@@ -209,7 +209,7 @@ def main():
     parser = argparse.ArgumentParser(description='Build quarterly NeurOST training/inference cache')
     parser.add_argument('--start',         required=True, help='Start date YYYY-MM-DD')
     parser.add_argument('--end',           required=True, help='End date YYYY-MM-DD (exclusive)')
-    parser.add_argument('--sst_zarr_dir',  default='input_data/mur_coarse_zarrs')
+    parser.add_argument('--sst_nc_dir',    default='input_data/mur_coarse_nc')
     parser.add_argument('--cmems_sla_dir', default='input_data/cmems_sla')
     parser.add_argument('--sst_out_dir',   default='input_data/sst_cache')
     parser.add_argument('--sla_out_dir',   default='input_data/sla_cache')
@@ -235,7 +235,7 @@ def main():
         print(f'\n=== Chunk {chunk_start} – {chunk_end} ===')
         if not args.no_sst:
             build_sst_chunk(chunk_start, chunk_end,
-                            args.sst_zarr_dir, args.sst_out_dir,
+                            args.sst_nc_dir, args.sst_out_dir,
                             args.n_t, args.force)
         if not args.no_sla:
             build_sla_chunk(chunk_start, chunk_end,

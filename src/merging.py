@@ -264,7 +264,7 @@ def merge_maps(data, kernel, lon_min = -180,lon_max = 180, lat_min = -70, lat_ma
     return pred_sum/np.expand_dims(kernel_sum,axis=-1), mx, my
 
 
-def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = False, dsla_dy = None, dsla_dx = None, d2sla_dx2 = None, d2sla_dy2 = None, d2sla_dxy = None, mask_coast_dist=10, network_name = 'SimVP_SSH', mask_ice = True, sst_zarr_dir = 'input_data/mur_coarse_zarrs/'):
+def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = False, dsla_dy = None, dsla_dx = None, d2sla_dx2 = None, d2sla_dy2 = None, d2sla_dxy = None, mask_coast_dist=10, network_name = 'SimVP_SSH', mask_ice = True, sst_nc_dir = 'input_data/mur_coarse_nc/'):
     """
     Takes global SLA map numpy array and create nicely formatted xarray dataset.
 
@@ -280,7 +280,7 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
         ds_dist: xarray dataset, distance to nearest coast from 2023a_SSH_mapping_OSE data challenge with coords renamed and shifted to longitude in [0,360]
         network_name: string, name of NN method used to produce the predictions
         mask_ice: Boolean, uses sea_ice_concentration from MUR SST to mask out sea ice if True.
-        sst_zarr_dir: string, path to the MUR SST zarr stores for sea ice masking.
+        sst_nc_dir: string, path to the coarsened MUR SST NetCDF files for sea ice masking.
         
 
     Returns:
@@ -457,17 +457,17 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
     
     if mask_ice:
         try:
-            ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date).replace('-','') + '.zarr'))
+            ds_ice_mask = xr.open_dataset(os.path.join(sst_nc_dir, str(date).replace('-','') + '.nc'))
             missing_mask = False
         except:
             missing_mask = True
-            print('Missing SST Zarr file for '+str(date)+' resorting to using ' + str(date - datetime.timedelta(days=1)))
+            print('Missing SST NetCDF file for '+str(date)+' resorting to using ' + str(date - datetime.timedelta(days=1)))
             try:
-                ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date - datetime.timedelta(days=1)).replace('-','') + '.zarr'))
+                ds_ice_mask = xr.open_dataset(os.path.join(sst_nc_dir, str(date - datetime.timedelta(days=1)).replace('-','') + '.nc'))
                 ice_mask_day = date - datetime.timedelta(days=1)
             except:
-                print('Missing SST Zarr file for '+str(date - datetime.timedelta(days=1))+' resorting to using ' + str(date + datetime.timedelta(days=1)))
-                ds_ice_mask = xr.open_zarr(os.path.join(sst_zarr_dir, str(date + datetime.timedelta(days=1)).replace('-','') + '.zarr'))
+                print('Missing SST NetCDF file for '+str(date - datetime.timedelta(days=1))+' resorting to using ' + str(date + datetime.timedelta(days=1)))
+                ds_ice_mask = xr.open_dataset(os.path.join(sst_nc_dir, str(date + datetime.timedelta(days=1)).replace('-','') + '.nc'))
                 ice_mask_day = date + datetime.timedelta(days=1)
         ds_ice_mask = ds_ice_mask.rename({'lon':'longitude', 'lat':'latitude'})
         ds_ice_mask['longitude'] = ds_ice_mask['longitude'] % 360
@@ -485,7 +485,7 @@ def map_to_xarray(sla, lon, lat, date, ds_mask, ds_dist, ds_mdt, with_grads = Fa
     return ds
 
 
-def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_dir, mask_filename, dist_filename, mdt_filename, network_name, coord_grid_path = 'input_data/coord_grids.npy', L=200e3, crop_pixels=4, dx=7.5e3, with_grads=False, mask_coast_dist=10, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=True, mask_ice=True, sst_zarr_path='input_data/mur_coarse_zarrs/', experiment_name = 'NeurOST_SSH-SST'):
+def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_dir, mask_filename, dist_filename, mdt_filename, network_name, coord_grid_path = 'input_data/coord_grids.npy', L=200e3, crop_pixels=4, dx=7.5e3, with_grads=False, mask_coast_dist=10, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=True, mask_ice=True, sst_nc_dir='input_data/mur_coarse_nc/', experiment_name = 'NeurOST_SSH-SST'):
     
     # add doc string
     
@@ -537,14 +537,14 @@ def merge_maps_and_save_zarr(pred_path, zarr_start_date, pred_date, output_nc_di
     if (with_grads == False):
         sla, lon, lat = merge_maps(data, kernel, lon_min, lon_max, lat_min, lat_max, res, progress)
         sla = np.reshape(sla,(sla.shape[0],sla.shape[1]))
-        ds = map_to_xarray(sla, lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_zarr_dir = sst_zarr_path)
+        ds = map_to_xarray(sla, lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_nc_dir = sst_nc_dir)
         date_today = datetime.date.today()
         save_path = os.path.join(output_nc_dir, experiment_name + f'_L{int(L/1e3)}km_' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc')
         remove_file(save_path)
         ds.to_netcdf(save_path)
     else:
         interps, lon, lat = merge_maps(data, kernel, lon_min, lon_max, lat_min, lat_max, res, progress)
-        ds = map_to_xarray(interps[:,:,0], lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, dsla_dx = interps[:,:,1], dsla_dy = interps[:,:,2], d2sla_dx2 = interps[:,:,3], d2sla_dy2 = interps[:,:,4], d2sla_dxy = interps[:,:,5], mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_zarr_dir = sst_zarr_path)
+        ds = map_to_xarray(interps[:,:,0], lon, lat, pred_date, ds_mask, ds_dist, ds_mdt, with_grads=with_grads, dsla_dx = interps[:,:,1], dsla_dy = interps[:,:,2], d2sla_dx2 = interps[:,:,3], d2sla_dy2 = interps[:,:,4], d2sla_dxy = interps[:,:,5], mask_coast_dist=mask_coast_dist, network_name = network_name, mask_ice = mask_ice, sst_nc_dir = sst_nc_dir)
         date_today = datetime.date.today()
         save_path = os.path.join(output_nc_dir, experiment_name + f'_L{int(L/1e3)}km_' + str(pred_date).replace('-','') + '_' + str(date_today).replace('-','') + '.nc')
         remove_file(save_path)

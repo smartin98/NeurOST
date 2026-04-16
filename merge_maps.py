@@ -41,7 +41,7 @@ def worker(lock, batches):
 
             batch = batches.pop(0)
 
-        merge_maps_and_save_zarr(pred_path, zarr_start_date, batch, output_nc_dir, args.mask_filename, args.dist_filename, args.mdt_filename, args.network_name, coord_grid_path = args.coord_grid_path,L=args.L, crop_pixels=9, dx=7.5e3, with_grads=True, mask_coast_dist=0, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=False, mask_ice=True, sst_zarr_path = 'input_data/mur_coarse_zarrs', experiment_name = experiment_name)
+        merge_maps_and_save_zarr(pred_path, zarr_start_date, batch, output_nc_dir, args.mask_filename, args.dist_filename, args.mdt_filename, args.network_name, coord_grid_path = args.coord_grid_path,L=args.L, crop_pixels=9, dx=7.5e3, with_grads=True, mask_coast_dist=0, lon_min=-180 ,lon_max=180, lat_min=-70, lat_max=80, res=1/10, progress=False, mask_ice=True, sst_nc_dir = 'input_data/mur_coarse_nc', experiment_name = experiment_name)
 
         gc.collect()
 
